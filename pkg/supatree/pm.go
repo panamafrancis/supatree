@@ -233,9 +233,12 @@ func OpenPM(cfg *Config, ws zellij.Workspace, sidebarWidth string) (bool, error)
 	if err != nil {
 		return false, err
 	}
+	if err := NonoPreflight(model.NonoProfile); err != nil {
+		return false, fmt.Errorf("PM: %w", err)
+	}
 	nonoArgs, err := sandbox.BuildGrantedNonoArgs(model, PMGrants(cfg, insts), PMDir(), PMAddress, true)
 	if err != nil {
 		return false, err
 	}
-	return ws.OpenOrFocusTab(PMTab, PMDir(), sidebarWidth, nonoArgs, PMEnv())
+	return ws.OpenOrFocusTab(PMTab, PMDir(), sidebarWidth, nonoArgs, withAgentExec(PMEnv()))
 }

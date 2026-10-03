@@ -56,6 +56,9 @@ func OpenRootAgent(inst *Instance, c *Config, ws zellij.Workspace, sidebarWidth,
 	if err != nil {
 		return false, err
 	}
+	if err := NonoPreflight(model.NonoProfile); err != nil {
+		return false, err
+	}
 	nonoArgs := sandbox.BuildGrantedAgentNonoArgs(model, TreeGrants(c, inst), inst.Root, agent.SessionID, agent.Address, resume)
 	// Mail waiting means somebody briefed this agent before it was running —
 	// the PM starting it, or a sibling. Without a first message it would sit
@@ -64,7 +67,7 @@ func OpenRootAgent(inst *Instance, c *Config, ws zellij.Workspace, sidebarWidth,
 	if HasMail(inst.Root, agentName) {
 		nonoArgs = sandbox.AppendPrompt(nonoArgs, model, KickoffPrompt)
 	}
-	env := inst.AgentEnv(agentName)
+	env := withAgentExec(inst.AgentEnv(agentName))
 	return ws.OpenOrFocusTab(TabName(inst.Name, agentName), inst.Root, sidebarWidth, nonoArgs, env)
 }
 
@@ -100,10 +103,13 @@ func OpenMemberAgent(inst *Instance, c *Config, ws zellij.Workspace, sidebarWidt
 	if err != nil {
 		return false, err
 	}
+	if err := NonoPreflight(model.NonoProfile); err != nil {
+		return false, err
+	}
 	nonoArgs := sandbox.BuildGrantedAgentNonoArgs(model, MemberGrants(c, inst, alias), m.Path, "", "", true)
 	env := inst.AgentEnv(alias)
 	env["SUPATREE_MEMBER"] = alias
-	return ws.OpenOrFocusTab(TabName(inst.Name, alias), m.Path, sidebarWidth, nonoArgs, env)
+	return ws.OpenOrFocusTab(TabName(inst.Name, alias), m.Path, sidebarWidth, nonoArgs, withAgentExec(env))
 }
 
 // OpenMemberShell opens a plain shell pane in the caller's current tab, rooted
