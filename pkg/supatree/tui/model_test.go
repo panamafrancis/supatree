@@ -9,6 +9,7 @@ import (
 	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/charmbracelet/lipgloss"
 
 	"github.com/panamafrancis/supatree/pkg/supatree"
 	"github.com/panamafrancis/workbench/pkg/github"
@@ -376,6 +377,7 @@ const (
 	berlin = "berlin"
 	cairo  = "cairo"
 	delhi  = "delhi"
+	oslo   = "oslo" // osloModel's one tree
 )
 
 // threeTrees builds a model holding three synthetic supatrees, each with two
@@ -1024,5 +1026,124 @@ func TestCreatingTreeShowsPlaceholder(t *testing.T) {
 	_, _ = m.Update(actionDoneMsg{err: errors.New("boom"), settled: "lima"})
 	if slices.ContainsFunc(m.rows, func(r row) bool { return r.kind == rowCreating }) {
 		t.Fatal("placeholder outlived its creation")
+	}
+}
+
+// main is listed first in every tree, whether or not agents.yml has recorded
+// it: a named agent added before main was ever opened used to replace it.
+func TestMainAgentAlwaysListed(t *testing.T) {
+	m := osloModel(t)
+	inst := m.instance(oslo)
+	inst.Root = filepath.Join(t.TempDir(), oslo)
+	agentLabels := func() []string {
+		var got []string
+		for _, r := range m.rows {
+			if r.kind == rowAgent && r.tree == oslo {
+				got = append(got, r.label)
+			}
+		}
+		return got
+	}
+
+	if _, _, err := supatree.EnsureAgent(inst.Root, oslo, "reviewer", "claude", time.Now()); err != nil {
+		t.Fatal(err)
+	}
+	m.rebuildRows()
+	if got := agentLabels(); !slices.Equal(got, []string{supatree.MainAgent, "reviewer"}) {
+		t.Fatalf("agent rows = %v, want main then reviewer", got)
+	}
+
+	// Once main is opened it is recorded too — after reviewer — and is still
+	// listed once, first.
+	if _, _, err := supatree.EnsureAgent(inst.Root, oslo, supatree.MainAgent, "claude", time.Now()); err != nil {
+		t.Fatal(err)
+	}
+	m.rebuildRows()
+	if got := agentLabels(); !slices.Equal(got, []string{supatree.MainAgent, "reviewer"}) {
+		t.Fatalf("agent rows = %v, want main then reviewer", got)
+	}
+}
+
+// assertFits fails if any line of out is wider than width.
+func assertFits(t *testing.T, what, out string, width int) {
+	t.Helper()
+	for _, line := range strings.Split(out, "\n") {
+		if w := lipgloss.Width(line); w > width {
+			t.Errorf("%s: line %q is %d wide, pane is %d:\n%s", what, line, w, width, out)
+		}
+	}
+}
+
+// A pane narrower than the help, a confirmation or a message folds them
+// rather than clipping them: the end of each is still on screen.
+func TestNarrowPaneFoldsText(t *testing.T) {
+	const width = 24
+	m := osloModel(t)
+	m.width = width
+
+	m.Update(key("?"))
+	out := strings.Join(m.panelLines(), "\n")
+	assertFits(t, "help", out, width)
+	// Folding moves words onto continuation lines; read it back as prose.
+	words := strings.Join(strings.Fields(out), " ")
+	for _, want := range []string{"hand this row to the top PM", "it (closes its tab)", "repo agent on a repo"} {
+		if !strings.Contains(words, want) {
+			t.Errorf("folded help lost %q:\n%s", want, out)
+		}
+	}
+	m.Update(key("x"))
+
+	m.mode, m.actionTree, m.actionAgent = modeConfirmDeleteAgent, oslo, "a-rather-long-agent-name"
+	out = m.footer()
+	assertFits(t, "confirmation", out, width)
+	if !strings.Contains(out, "[y/N]") {
+		t.Errorf("confirmation lost its [y/N]:\n%s", out)
+	}
+
+	m.mode = modeNormal
+	m.msg = "main goes with the supatree — d on the tree row deletes it"
+	out = m.footer()
+	assertFits(t, "message", out, width)
+	if !strings.Contains(out, "deletes it") {
+		t.Errorf("message clipped:\n%s", out)
+	}
+}
+
+// An error takes a few lines of the footer, not the pane: its first line, cut
+// short, and the keys. e opens the whole of it in the panel the help uses.
+func TestErrorSummaryAndDetail(t *testing.T) {
+	const width = 28
+	m := osloModel(t)
+	m.width = width
+	m.err = errors.New(`PM infra: nono cannot load profile "supatree-agent", so the agent would exit as soon as it started:
+  [err] File read error: Profile read error at supatree-agent: profile file not found
+if nono was upgraded, check: nono outdated`)
+
+	out := m.footer()
+	assertFits(t, "error footer", out, width)
+	if n := strings.Count(out, "\n") + 1; n > errSummaryLines+1 {
+		t.Errorf("error footer is %d lines, want at most %d:\n%s", n, errSummaryLines+1, out)
+	}
+	if strings.Contains(out, "profile file not found") || !strings.Contains(out, "e full error") {
+		t.Errorf("footer should show the summary and how to see the rest:\n%s", out)
+	}
+
+	m.Update(key("e"))
+	if m.mode != modeHelp {
+		t.Fatalf("e: mode = %v, want the panel", m.mode)
+	}
+	out = strings.Join(m.panelLines(), "\n")
+	assertFits(t, "error detail", out, width)
+	if !strings.Contains(out, "found") || !strings.Contains(out, "nono outdated") {
+		t.Errorf("detail is missing the rest of the error:\n%s", out)
+	}
+
+	m.Update(key("x"))
+	if m.mode != modeNormal || m.detail != "" || m.err != nil {
+		t.Fatalf("closing the detail: mode %v, detail %q, err %v", m.mode, m.detail, m.err)
+	}
+	m.Update(key("?"))
+	if !strings.Contains(m.View(), "Navigation") {
+		t.Error("? after an error detail should show the reference again")
 	}
 }

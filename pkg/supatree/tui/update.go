@@ -124,7 +124,7 @@ func (m *Model) updateMouse(msg tea.MouseMsg) (tea.Model, tea.Cmd) {
 	return m, nil
 }
 
-// updateHelp scrolls the `?` reference with the motions the list uses, and
+// updateHelp scrolls the `?` panel with the motions the list uses, and
 // closes it on any other key — it is read-only, so there is nothing to confirm
 // or cancel. helpView clamps the scroll to what the pane shows.
 func (m *Model) updateHelp(msg tea.KeyMsg) {
@@ -141,10 +141,11 @@ func (m *Model) updateHelp(msg tea.KeyMsg) {
 	case "g":
 		m.helpScroll = 0
 	case "G":
-		m.helpScroll = len(helpLines())
+		m.helpScroll = len(m.panelLines())
 	default:
 		m.mode = modeNormal
 		m.helpScroll = 0
+		m.detail = ""
 	}
 }
 
@@ -154,8 +155,15 @@ func (m *Model) updateNormal(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	// create prompt until some other action happened to replace it. Any
 	// deliberate keystroke means the user has read it, so clear it here and let
 	// the action about to run post its own.
+	lastErr := m.err
 	m.err = nil
 	m.msg = ""
+	if msg.String() == "e" && lastErr != nil {
+		// The footer shows only an error's first line; this is the rest.
+		m.detail = lastErr.Error()
+		m.mode = modeHelp
+		return m, nil
+	}
 
 	// Two-key vim sequences: gg (top), zM (fold all), zR (unfold all). A pending
 	// prefix consumes exactly one more key; an unrecognized pair cancels the
@@ -787,13 +795,8 @@ func (m *Model) removeAgent(tree, agent string) tea.Cmd {
 func (m *Model) newPM(name string) tea.Cmd {
 	stCfg, ws, width := m.stCfg, m.ws, m.stCfg.ResolveSidebarWidth()
 	return func() tea.Msg {
-		if _, err := supatree.AddPM(name, ""); err != nil {
+		if _, err := supatree.NewPM(stCfg, ws, width, name, "", zellij.IsInZellij()); err != nil {
 			return actionDoneMsg{err: err}
-		}
-		if zellij.IsInZellij() {
-			if _, err := supatree.OpenPM(stCfg, ws, width, name); err != nil {
-				return actionDoneMsg{err: err}
-			}
 		}
 		return actionDoneMsg{msg: "added PM " + name}
 	}

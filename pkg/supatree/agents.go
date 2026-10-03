@@ -115,6 +115,13 @@ func RemoveAgent(root, name string) (Agent, error) {
 	if name == MainAgent {
 		return Agent{}, ErrMainAgent
 	}
+	return forgetAgent(root, name)
+}
+
+// forgetAgent drops an agent's record from agents.yml, main included. Removing
+// an agent on purpose goes through RemoveAgent; this is also how a launch that
+// failed takes back the record it made.
+func forgetAgent(root, name string) (Agent, error) {
 	agents, err := LoadAgents(root)
 	if err != nil {
 		return Agent{}, err

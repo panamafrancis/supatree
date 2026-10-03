@@ -50,16 +50,15 @@ var pmNewCmd = &cobra.Command{
 	Short: "Add a PM below the existing ones, and open it",
 	Args:  cobra.ExactArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
-		p, err := supatree.AddPM(args[0], pmNewModel)
+		inZellij := zellij.IsInZellij()
+		p, err := supatree.NewPM(stCfg, supatreeWorkspace(), stCfg.ResolveSidebarWidth(), args[0], pmNewModel, inZellij)
 		if err != nil {
 			return err
 		}
-		if !zellij.IsInZellij() {
+		if !inZellij {
 			fmt.Printf("added PM %s; open it with: supatree pm %s\n", p.Name, p.Name)
-			return nil
 		}
-		_, err = supatree.OpenPM(stCfg, supatreeWorkspace(), stCfg.ResolveSidebarWidth(), p.Name)
-		return err
+		return nil
 	},
 }
 

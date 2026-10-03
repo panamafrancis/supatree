@@ -26,7 +26,7 @@ func TabName(tree, agent string) string {
 // (nono --allow the whole tree). Several agents share the root but resume
 // independently via their session IDs. Warnings that do not stop the open go
 // to startupW.
-func OpenRootAgent(inst *Instance, c *Config, ws zellij.Workspace, sidebarWidth, agentName, modelOverride string, startupW io.Writer) (bool, error) {
+func OpenRootAgent(inst *Instance, c *Config, ws zellij.Workspace, sidebarWidth, agentName, modelOverride string, startupW io.Writer) (opened bool, err error) {
 	if agentName == "" {
 		agentName = MainAgent
 	}
@@ -38,10 +38,19 @@ func OpenRootAgent(inst *Instance, c *Config, ws zellij.Workspace, sidebarWidth,
 	if modelOverride != "" {
 		key = modelOverride
 	}
-	agent, _, err := EnsureAgent(inst.Root, inst.Name, agentName, key, time.Now())
+	agent, created, err := EnsureAgent(inst.Root, inst.Name, agentName, key, time.Now())
 	if err != nil {
 		return false, err
 	}
+	// A record this call made is kept only if the agent launches: one left
+	// behind by a refused launch (nono rejecting its profile, say) would be
+	// listed as if it were running. A record made earlier — start_agent
+	// registers an agent before the watcher launches it — is not ours to drop.
+	defer func() {
+		if created && err != nil {
+			_, _ = forgetAgent(inst.Root, agentName)
+		}
+	}()
 	// Several agents share this directory, which is what makes Claude's folder
 	// trust never stick here (see sandbox.TrustDir). Seed it before launching;
 	// failing to is a prompt the user answers, not a reason to refuse to open.

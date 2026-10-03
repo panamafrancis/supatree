@@ -2,6 +2,7 @@ package tui
 
 import (
 	"fmt"
+	"regexp"
 	"strings"
 
 	"github.com/charmbracelet/lipgloss"
@@ -255,7 +256,7 @@ func (m *Model) footer() string {
 		return "new agent: " + m.input.View()
 	case modeNewTree:
 		var b strings.Builder
-		b.WriteString(styleSub.Render("new supatree — pick stack (↑/↓, enter, esc):"))
+		b.WriteString(styleSub.Render(wrapText("new supatree — pick stack (↑/↓, enter, esc):", m.width)))
 		for i, s := range m.stCfg.Stacks {
 			b.WriteString("\n")
 			if i == m.stackCursor {
@@ -280,7 +281,7 @@ func (m *Model) footer() string {
 		}
 		return prompt
 	case modeConfirmDelete:
-		return styleDirty.Render(fmt.Sprintf("delete %q? [y/N]", m.actionTree))
+		return styleDirty.Render(wrapText(fmt.Sprintf("delete %q? [y/N]", m.actionTree), m.width))
 	case modeNewPM:
 		prompt := "new PM — name: " + m.input.View()
 		if m.inputErr != nil {
@@ -288,9 +289,9 @@ func (m *Model) footer() string {
 		}
 		return prompt
 	case modeConfirmDeletePM:
-		return styleDirty.Render(fmt.Sprintf("remove PM %q? [y/N]", m.actionPM))
+		return styleDirty.Render(wrapText(fmt.Sprintf("remove PM %q? [y/N]", m.actionPM), m.width))
 	case modeConfirmDeleteAgent:
-		return styleDirty.Render(fmt.Sprintf("remove agent %q? [y/N]", supatree.TabName(m.actionTree, m.actionAgent)))
+		return styleDirty.Render(wrapText(fmt.Sprintf("remove agent %q? [y/N]", supatree.TabName(m.actionTree, m.actionAgent)), m.width))
 	case modeConfirmQuit:
 		return styleDirty.Render("quit sidebar? [y/N]")
 	case modeHelp:
@@ -298,7 +299,11 @@ func (m *Model) footer() string {
 	case modeNormal:
 	}
 	if m.err != nil {
-		return stylePRClosed.Render(wrapText("error: "+m.err.Error(), m.width))
+		// Only the gist: the full text (nono's complaint, a hint) can run to a
+		// screenful in a pane this narrow, and would bury the list and the
+		// keys. `e` opens all of it.
+		return stylePRClosed.Render(errSummary(m.err, m.width)) + "\n" +
+			styleStatus.Render(wrapParts([]string{"e full error", "any key hides"}, " · ", m.width))
 	}
 	// Enter is contextual (a member row is a place, an agent row is a process),
 	// so the hint says which one the cursor is on rather than a generic "open".
@@ -318,10 +323,32 @@ func (m *Model) footer() string {
 	if m.prHint != "" {
 		parts = append(parts, "("+m.prHint+")")
 	}
+	hints := wrapParts(parts, " · ", m.width)
 	if m.msg != "" {
-		parts = append([]string{m.msg}, parts...)
+		// A line of its own: as one of the parts, a message wider than the
+		// pane would be clipped rather than folded.
+		hints = wrapText(m.msg, m.width) + "\n" + hints
 	}
-	return styleStatus.Render(wrapParts(parts, " · ", m.width))
+	return styleStatus.Render(hints)
+}
+
+// errSummaryLines caps the footer's error summary.
+const errSummaryLines = 3
+
+// errSummary is an error's first line, folded to the pane and cut at
+// errSummaryLines — the footer's short form of an error `e` shows in full.
+func errSummary(err error, width int) string {
+	first, _, _ := strings.Cut(err.Error(), "\n")
+	lines := strings.Split(wrapText("error: "+strings.TrimSuffix(strings.TrimSpace(first), ":"), width), "\n")
+	if len(lines) > errSummaryLines {
+		lines = lines[:errSummaryLines]
+		last := lines[errSummaryLines-1]
+		if i := strings.LastIndex(last, " "); width > 0 && lipgloss.Width(last+" …") > width && i > 0 {
+			last = last[:i]
+		}
+		lines[errSummaryLines-1] = last + " …"
+	}
+	return strings.Join(lines, "\n")
 }
 
 // wrapParts joins parts with sep, folding onto multiple lines so nothing is
@@ -356,7 +383,55 @@ func wrapParts(parts []string, sep string, width int) string {
 // wrapText word-wraps one message to the sidebar width — an error or a
 // validation complaint is a sentence, and a narrow pane would otherwise clip it.
 func wrapText(s string, width int) string {
-	return wrapParts(strings.Fields(s), " ", width)
+	fields := strings.Fields(s)
+	words := make([]string, 0, len(fields))
+	for _, w := range fields {
+		words = append(words, breakWord(w, width)...)
+	}
+	return wrapParts(words, " ", width)
+}
+
+// breakWord splits a word wider than the pane — a path in an error, say — into
+// pieces that fit, since a word is otherwise the smallest thing wrapping moves.
+func breakWord(w string, width int) []string {
+	if width <= 0 || lipgloss.Width(w) <= width {
+		return []string{w}
+	}
+	var pieces []string
+	cur := ""
+	for _, r := range w {
+		if cur != "" && lipgloss.Width(cur+string(r)) > width {
+			pieces = append(pieces, cur)
+			cur = ""
+		}
+		cur += string(r)
+	}
+	return append(pieces, cur)
+}
+
+// keyColumn matches a help line up to where its description starts: the
+// indent, the key, and the run of two or more spaces after it.
+var keyColumn = regexp.MustCompile(`^(\s*\S.*?\s{2,})\S`)
+
+// wrapHanging folds one line of the `?` panel to the pane width, indenting
+// continuation lines to where the description started so the key column stays
+// clear. A line with no key column (a continuation, or a line of an error)
+// keeps its own indent.
+func wrapHanging(s string, width int) string {
+	if width <= 0 || lipgloss.Width(s) <= width {
+		return s
+	}
+	prefix := s[:len(s)-len(strings.TrimLeft(s, " "))]
+	if loc := keyColumn.FindStringSubmatchIndex(s); loc != nil {
+		prefix = s[:loc[3]]
+	}
+	pad := lipgloss.Width(prefix)
+	if width-pad < 10 {
+		// Too narrow to indent and still fit words; fold flush left.
+		return wrapText(s, width)
+	}
+	body := wrapText(s[len(prefix):], width-pad)
+	return prefix + strings.ReplaceAll(body, "\n", "\n"+strings.Repeat(" ", pad))
 }
 
 func prIcon(s github.PRStatus) string {
@@ -413,28 +488,45 @@ func zellijTabs() (map[string]bool, error) {
 	return zellij.TabNames()
 }
 
-// helpView renders the `?` reference, windowed to the pane: it is taller than
-// most sidebars, so j/k scroll it (see updateHelp) and the last line says so
+// helpView renders the `?` panel — the keybinding reference, or the full text
+// of an error opened with `e` — windowed to the pane: it is taller than most
+// sidebars, so j/k scroll it (see updateHelp) and the last line says so
 // whenever some of it is out of sight.
 func (m *Model) helpView() string {
-	lines := helpLines()
-	avail := m.height - 2 // the "supatree" header and the closing hint
-	if m.height <= 0 || len(lines) <= avail {
+	lines := m.panelLines()
+	closeHint := styleMuted.Render(wrapText("press any key to close", m.width))
+	if m.height <= 0 || len(lines) <= m.height-1-lipgloss.Height(closeHint) {
 		m.helpScroll = 0
-		return strings.Join(lines, "\n") + "\n" + styleMuted.Render("press any key to close")
+		return strings.Join(lines, "\n") + "\n" + closeHint
 	}
-	if avail < 1 {
-		avail = 1
+	// Sized for the widest the counts get, so the hint cannot outgrow the
+	// space reserved for it as the user scrolls.
+	scrollHint := func(end int) string {
+		return styleMuted.Render(wrapText(fmt.Sprintf("j/k scroll (%d/%d) · other keys close", end, len(lines)), m.width))
 	}
+	avail := max(m.height-1-lipgloss.Height(scrollHint(len(lines))), 1) // less the "supatree" header
 	m.helpScroll = min(max(m.helpScroll, 0), len(lines)-avail)
 	end := m.helpScroll + avail
-	hint := fmt.Sprintf("j/k scroll (%d/%d) · other keys close", end, len(lines))
-	return strings.Join(lines[m.helpScroll:end], "\n") + "\n" + styleMuted.Render(hint)
+	return strings.Join(lines[m.helpScroll:end], "\n") + "\n" + scrollHint(end)
 }
 
-// helpLines is the `?` reference. It is a plain block rather than the footer's
-// wrapped one-liner because the sidebar is narrow: every line is kept short
-// enough to survive a 25%-width pane without folding.
+// panelLines is what the `?` panel shows, folded to the pane width: the full
+// text of the error `e` opened, else the keybinding reference.
+func (m *Model) panelLines() []string {
+	src := helpLines()
+	if m.detail != "" {
+		src = strings.Split(m.detail, "\n")
+	}
+	lines := make([]string, 0, len(src))
+	for _, l := range src {
+		lines = append(lines, strings.Split(wrapHanging(l, m.width), "\n")...)
+	}
+	return lines
+}
+
+// helpLines is the `?` reference: a key column and a description per entry,
+// one line each however long — wrapHanging folds them to the pane, under the
+// description column. A line of its own (d's) is a separate case, not a fold.
 func helpLines() []string {
 	return []string{
 		styleHeader.Render("Navigation"),
@@ -451,23 +543,17 @@ func helpLines() []string {
 		"  zM / zR  fold / unfold all",
 		"",
 		styleHeader.Render("Open"),
-		"  enter/o  agent, or shell",
-		"           on a repo row,",
-		"           PM on a PM row",
-		"  a        new named agent,",
-		"           repo agent on a repo",
+		"  enter/o  agent, or shell on a repo row, PM on a PM row",
+		"  a        new named agent, repo agent on a repo",
 		"  p        new PM",
 		"  D        dashboard",
 		"  P        top PM",
-		"  m        hand this row to the",
-		"           top PM",
+		"  m        hand this row to the top PM",
 		"",
 		styleHeader.Render("Remove"),
 		"  d        on a PM: remove it",
-		"           on an agent: remove",
-		"           it (closes its tab)",
-		"           elsewhere: delete",
-		"           the supatree",
+		"           on an agent: remove it (closes its tab)",
+		"           elsewhere: delete the supatree",
 		"",
 		styleHeader.Render("Supatrees"),
 		"  n        new supatree",
@@ -476,6 +562,7 @@ func helpLines() []string {
 		"",
 		styleHeader.Render("Global"),
 		"  r        refresh",
+		"  e        full text of the last error",
 		"  ?        this help",
 		"  q        quit",
 		"",
@@ -505,10 +592,8 @@ func helpLines() []string {
 		styleHeader.Render("Zellij session"),
 		"  Ctrl+s      scroll mode",
 		"  Ctrl+s s    search",
-		"  Ctrl+s e    scrollback in",
-		"              $EDITOR",
-		"  Ctrl+g      lock keys",
-		"              (pass through)",
+		"  Ctrl+s e    scrollback in $EDITOR",
+		"  Ctrl+g      lock keys (pass through)",
 		"  Ctrl+o w    sessions",
 		"  Ctrl+o d    detach",
 		"  Ctrl+q      quit session",
