@@ -2,9 +2,11 @@ package tui
 
 import (
 	"errors"
+	"path/filepath"
 	"slices"
 	"strings"
 	"testing"
+	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
 
@@ -55,14 +57,14 @@ func TestRebuildRowsStructure(t *testing.T) {
 	// The PM section always leads. Repositories start folded, so out of the
 	// box: tree, "agents" subheader, main agent, "repositories" header — and no
 	// member rows.
-	want := []rowKind{rowPMHeader, rowPM, rowDivider, rowTree, rowSubheader, rowAgent, rowRepos}
+	want := []rowKind{rowHeader, rowPM, rowDivider, rowHeader, rowTree, rowSubheader, rowAgent, rowRepos}
 	if got := rowKinds(m); !slices.Equal(got, want) {
 		t.Fatalf("folded rows = %v, want %v", got, want)
 	}
 
 	// Unfolding the section adds the members under it.
 	expandRepos(m)
-	want = []rowKind{rowPMHeader, rowPM, rowDivider, rowTree, rowSubheader, rowAgent, rowRepos, rowMember, rowMember}
+	want = []rowKind{rowHeader, rowPM, rowDivider, rowHeader, rowTree, rowSubheader, rowAgent, rowRepos, rowMember, rowMember}
 	if got := rowKinds(m); !slices.Equal(got, want) {
 		t.Fatalf("unfolded rows = %v, want %v", got, want)
 	}
@@ -780,7 +782,7 @@ func TestKeypressClearsLastActionResult(t *testing.T) {
 	}
 }
 
-// ? opens the keybinding reference and any key closes it again.
+// ? opens the keybinding reference and any key but a motion closes it again.
 func TestHelpOpensAndCloses(t *testing.T) {
 	m := osloModel(t)
 
@@ -795,7 +797,7 @@ func TestHelpOpensAndCloses(t *testing.T) {
 		}
 	}
 
-	m.Update(key("j"))
+	m.Update(key("x"))
 	if m.mode != modeNormal {
 		t.Fatalf("a key did not dismiss the help: mode = %v", m.mode)
 	}
@@ -810,7 +812,7 @@ func TestHelpOpensAndCloses(t *testing.T) {
 func TestPMRowPinnedAtTop(t *testing.T) {
 	testutil.IsolateHome(t)
 	m := New(supatree.DefaultConfig(), zellij.Workspace{})
-	if got := rowKinds(m); !slices.Equal(got, []rowKind{rowPMHeader, rowPM, rowDivider}) {
+	if got := rowKinds(m); !slices.Equal(got, []rowKind{rowHeader, rowPM, rowDivider}) {
 		t.Fatalf("empty rows = %v, want the PM section alone", got)
 	}
 	out := m.View()
@@ -865,7 +867,7 @@ func TestPMSectionListsEveryPM(t *testing.T) {
 		t.Fatal(err)
 	}
 	m.reload()
-	if got := rowKinds(m)[:4]; !slices.Equal(got, []rowKind{rowPMHeader, rowPM, rowPM, rowDivider}) {
+	if got := rowKinds(m)[:4]; !slices.Equal(got, []rowKind{rowHeader, rowPM, rowPM, rowDivider}) {
 		t.Fatalf("PM section = %v, want a heading, both PMs and the divider", got)
 	}
 	if m.rows[1].label != supatree.DefaultPMName || m.rows[2].label != "research" {
@@ -877,8 +879,8 @@ func TestPMSectionListsEveryPM(t *testing.T) {
 	}
 }
 
-// a on a PM row names a new PM; d removes one, after a confirmation, and is
-// refused for the only PM.
+// p names a new PM (a on a PM row only points at p); d removes one, after a
+// confirmation, and is refused for the only PM.
 func TestPMSectionAddAndRemove(t *testing.T) {
 	m := threeTrees(t)
 	m.cursor = rowIndex(m, rowPM)
@@ -889,8 +891,12 @@ func TestPMSectionAddAndRemove(t *testing.T) {
 	}
 
 	_, _ = m.Update(key("a"))
+	if m.mode != modeNormal || !strings.Contains(m.msg, "p adds a PM") {
+		t.Fatalf("a on the PM row: mode %v, msg %q; want a pointer to p", m.mode, m.msg)
+	}
+	_, _ = m.Update(key("p"))
 	if m.mode != modeNewPM {
-		t.Fatalf("a on the PM row: mode %v, want the new-PM prompt", m.mode)
+		t.Fatalf("p: mode %v, want the new-PM prompt", m.mode)
 	}
 	for _, r := range supatree.DefaultPMName {
 		_, _ = m.Update(key(string(r)))
@@ -915,5 +921,108 @@ func TestPMSectionAddAndRemove(t *testing.T) {
 	_, cmd = m.Update(key("n"))
 	if m.mode != modeNormal || cmd != nil {
 		t.Fatal("declining the removal still removed")
+	}
+}
+
+// The reference is taller than most sidebars: j/k scroll it within the pane
+// instead of closing it, and the footer says there is more.
+func TestHelpScrolls(t *testing.T) {
+	m := osloModel(t)
+	m.height = 20
+	m.Update(key("?"))
+	out := m.View()
+	if strings.Contains(out, "Zellij session") || !strings.Contains(out, "j/k scroll") {
+		t.Fatalf("a short pane should window the help and say how to scroll:\n%s", out)
+	}
+	m.Update(key("G"))
+	if m.mode != modeHelp {
+		t.Fatalf("G closed the help")
+	}
+	out = m.View()
+	if !strings.Contains(out, "quit session") || strings.Count(out, "\n") > m.height {
+		t.Fatalf("G should show the end of the help within the pane:\n%s", out)
+	}
+}
+
+// d on an agent row removes that agent after a confirmation — not the supatree
+// around it — and refuses the main agent, which goes with the tree.
+func TestDeleteAgent(t *testing.T) {
+	m := osloModel(t)
+	inst := m.instance("oslo")
+	inst.Root = filepath.Join(t.TempDir(), "oslo")
+	if _, _, err := supatree.EnsureAgent(inst.Root, "oslo", "reviewer", "claude", time.Now()); err != nil {
+		t.Fatal(err)
+	}
+	m.rebuildRows()
+
+	m.selectRow(row{kind: rowAgent, tree: "oslo", label: "reviewer"})
+	if sel := m.selected(); sel == nil || sel.label != "reviewer" {
+		t.Fatalf("no reviewer row: %v", rowKinds(m))
+	}
+	_, _ = m.Update(key("d"))
+	if m.mode != modeConfirmDeleteAgent || !strings.Contains(m.footer(), "oslo:reviewer") {
+		t.Fatalf("d on an agent: mode %v, footer %q; want the agent confirmation", m.mode, m.footer())
+	}
+	_, cmd := m.Update(key("y"))
+	if cmd == nil {
+		t.Fatal("confirming returned no command")
+	}
+	if done, ok := cmd().(actionDoneMsg); !ok || done.err != nil {
+		t.Fatalf("removing the agent: %+v", done)
+	}
+	agents, _ := supatree.LoadAgents(inst.Root)
+	if supatree.FindAgent(agents, "reviewer") != nil {
+		t.Fatalf("reviewer still registered: %+v", agents)
+	}
+
+	m.rebuildRows()
+	m.selectRow(row{kind: rowAgent, tree: "oslo", label: supatree.MainAgent})
+	_, cmd = m.Update(key("d"))
+	if m.mode != modeNormal || cmd != nil || !strings.Contains(m.msg, "main") {
+		t.Fatalf("d on main: mode %v, msg %q; want a refusal", m.mode, m.msg)
+	}
+}
+
+// Review trees sit in a Reviews section of their own, below the WIP one.
+func TestReviewTreesHaveTheirOwnSection(t *testing.T) {
+	m := threeTrees(t)
+	m.insts[1].Mode = supatree.ModeReviewing
+	m.rebuildRows()
+	var headings []string
+	reviewsAt, cairoAt := -1, -1
+	for i, r := range m.rows {
+		if r.kind == rowHeader {
+			headings = append(headings, r.label)
+			if r.label == reviewsHeaderLabel {
+				reviewsAt = i
+			}
+		}
+		if r.kind == rowTree && r.tree == m.insts[1].Name {
+			cairoAt = i
+		}
+	}
+	if !slices.Equal(headings, []string{pmHeaderLabel, wipHeaderLabel, reviewsHeaderLabel}) {
+		t.Fatalf("headings = %v", headings)
+	}
+	if cairoAt < reviewsAt {
+		t.Fatalf("the review tree (row %d) is above the Reviews heading (row %d)", cairoAt, reviewsAt)
+	}
+}
+
+// A supatree being created shows up at once, under WIP, and gives way to the
+// real row when the creation settles.
+func TestCreatingTreeShowsPlaceholder(t *testing.T) {
+	m := threeTrees(t)
+	m.creating = []string{"lima"}
+	m.rebuildRows()
+	if i := slices.IndexFunc(m.rows, func(r row) bool { return r.kind == rowCreating && r.tree == "lima" }); i < 0 {
+		t.Fatalf("no placeholder row: %v", rowKinds(m))
+	}
+	if !strings.Contains(m.View(), "lima  creating…") {
+		t.Errorf("placeholder not rendered:\n%s", m.View())
+	}
+	_, _ = m.Update(actionDoneMsg{err: errors.New("boom"), settled: "lima"})
+	if slices.ContainsFunc(m.rows, func(r row) bool { return r.kind == rowCreating }) {
+		t.Fatal("placeholder outlived its creation")
 	}
 }

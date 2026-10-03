@@ -3,6 +3,7 @@ package tui
 import (
 	"fmt"
 	"os"
+	"slices"
 	"strings"
 	"time"
 
@@ -71,6 +72,9 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case actionDoneMsg:
 		m.msg = msg.msg
 		m.err = msg.err
+		if msg.settled != "" {
+			m.creating = slices.DeleteFunc(m.creating, func(n string) bool { return n == msg.settled })
+		}
 		m.reloadWithSelection()
 		if msg.reveal != "" {
 			// Land the cursor on the just-created tree so the viewport scrolls to
@@ -82,9 +86,7 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m.updateMouse(msg)
 	case tea.KeyMsg:
 		if m.mode == modeHelp {
-			// Any key dismisses the reference — it is a read-only overlay, so
-			// there is nothing to confirm or cancel.
-			m.mode = modeNormal
+			m.updateHelp(msg)
 			return m, nil
 		}
 		if m.mode != modeNormal {
@@ -99,6 +101,15 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 // where it is) and click-to-select. Written with ifs rather than a switch on
 // tea.MouseButton so it needn't enumerate every button the linter knows about.
 func (m *Model) updateMouse(msg tea.MouseMsg) (tea.Model, tea.Cmd) {
+	if m.mode == modeHelp {
+		if msg.Button == tea.MouseButtonWheelUp {
+			m.helpScroll -= wheelStep
+		}
+		if msg.Button == tea.MouseButtonWheelDown {
+			m.helpScroll += wheelStep
+		}
+		return m, nil
+	}
 	if m.mode != modeNormal {
 		return m, nil
 	}
@@ -111,6 +122,30 @@ func (m *Model) updateMouse(msg tea.MouseMsg) (tea.Model, tea.Cmd) {
 		m.selectByRow(msg.Y - rowsTopOffset)
 	}
 	return m, nil
+}
+
+// updateHelp scrolls the `?` reference with the motions the list uses, and
+// closes it on any other key — it is read-only, so there is nothing to confirm
+// or cancel. helpView clamps the scroll to what the pane shows.
+func (m *Model) updateHelp(msg tea.KeyMsg) {
+	page := max(m.height/2, 1)
+	switch msg.String() {
+	case "j", "down":
+		m.helpScroll++
+	case "k", "up":
+		m.helpScroll--
+	case "ctrl+d":
+		m.helpScroll += page
+	case "ctrl+u":
+		m.helpScroll -= page
+	case "g":
+		m.helpScroll = 0
+	case "G":
+		m.helpScroll = len(helpLines())
+	default:
+		m.mode = modeNormal
+		m.helpScroll = 0
+	}
 }
 
 func (m *Model) updateNormal(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
@@ -203,13 +238,17 @@ func (m *Model) updateNormal(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 		return m, m.openSelected()
+	case "p":
+		// Its own key rather than `a` on the PM section: "a" reads as "agent",
+		// and a PM is not one of a supatree's agents.
+		m.mode = modeNewPM
+		m.input.SetValue("")
+		m.inputErr = nil
+		m.input.Placeholder = "PM name"
+		m.input.Focus()
 	case "a":
 		if r := m.selected(); r != nil && r.kind == rowPM {
-			m.mode = modeNewPM
-			m.input.SetValue("")
-			m.inputErr = nil
-			m.input.Placeholder = "PM name"
-			m.input.Focus()
+			m.msg = "a adds an agent to a supatree — p adds a PM"
 			return m, nil
 		}
 		if r := m.selectedInTree(); r != nil {
@@ -259,11 +298,23 @@ func (m *Model) updateNormal(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case "d":
 		if r := m.selected(); r != nil && r.kind == rowPM {
 			if len(m.pms) < 2 {
-				m.msg = "the only PM cannot be removed — add another first (a)"
+				m.msg = "the only PM cannot be removed — add another first (p)"
 				return m, nil
 			}
 			m.mode = modeConfirmDeletePM
 			m.actionPM = r.label
+			return m, nil
+		}
+		if r := m.selected(); r != nil && r.kind == rowAgent {
+			// d acts on the row under the cursor: an agent row removes that
+			// agent, not the supatree around it.
+			if r.label == supatree.MainAgent {
+				m.msg = "main goes with the supatree — d on the tree row deletes it"
+				return m, nil
+			}
+			m.mode = modeConfirmDeleteAgent
+			m.actionTree = r.tree
+			m.actionAgent = r.label
 			return m, nil
 		}
 		if r := m.selectedInTree(); r != nil {
@@ -281,6 +332,13 @@ func (m *Model) updateInput(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 		return m, m.removePM(m.actionPM)
+	}
+	if m.mode == modeConfirmDeleteAgent {
+		m.mode = modeNormal
+		if msg.String() != "y" && msg.String() != "Y" {
+			return m, nil
+		}
+		return m, m.removeAgent(m.actionTree, m.actionAgent)
 	}
 	if m.mode == modeConfirmDelete || m.mode == modeConfirmQuit {
 		confirmed := msg.String() == "y" || msg.String() == "Y"
@@ -345,7 +403,7 @@ func (m *Model) updateInput(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.mode = modeNormal
 			m.inputErr = nil
 			m.input.Blur()
-			return m, m.newTree(stack, val)
+			return m, m.startNewTree(stack, val)
 		case modeNewStackName:
 			if err := m.validateStackName(val); err != nil {
 				m.inputErr = err
@@ -355,7 +413,7 @@ func (m *Model) updateInput(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.inputErr = nil
 			m.input.Blur()
 			return m, m.openStackNew(val)
-		case modeNormal, modeNewTree, modeConfirmDelete, modeConfirmQuit, modeHelp, modeConfirmDeletePM:
+		case modeNormal, modeNewTree, modeConfirmDelete, modeConfirmQuit, modeHelp, modeConfirmDeletePM, modeConfirmDeleteAgent:
 			// Not text-input modes; handled earlier in updateInput.
 		}
 		m.mode = modeNormal
@@ -382,7 +440,7 @@ func (m *Model) updateInput(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			} else {
 				m.inputErr = nil
 			}
-		case modeNormal, modeNewAgent, modeNewTree, modeConfirmDelete, modeConfirmQuit, modeHelp, modeConfirmDeletePM:
+		case modeNormal, modeNewAgent, modeNewTree, modeConfirmDelete, modeConfirmQuit, modeHelp, modeConfirmDeletePM, modeConfirmDeleteAgent:
 		}
 		return m, cmd
 	}
@@ -398,10 +456,13 @@ func (m *Model) validateTreeName(name string) error {
 	if name == "" {
 		return nil
 	}
-	existing := make([]string, 0, len(m.insts))
+	existing := make([]string, 0, len(m.insts)+len(m.creating))
 	for _, inst := range m.insts {
 		existing = append(existing, inst.Name)
 	}
+	// A tree still being created is taken too: a second one of the same name
+	// would fail, and its settling would clear the first one's placeholder.
+	existing = append(existing, m.creating...)
 	return git.ValidateName(name, existing)
 }
 
@@ -464,7 +525,7 @@ func (m *Model) openSelected() tea.Cmd {
 	switch r.kind {
 	case rowPM:
 		return m.openPM(r.label)
-	case rowDivider, rowPMHeader:
+	case rowDivider, rowHeader, rowCreating:
 		// Never selectable, so never reached.
 	case rowMember:
 		// A member row is a place, not a process: enter stands in it. The
@@ -655,7 +716,7 @@ func handoffText(r row) string {
 		return fmt.Sprintf("Look at %s/%s.", r.tree, r.alias)
 	case rowAgent:
 		return fmt.Sprintf("Look at the %s agent in %s.", r.label, r.tree)
-	case rowTree, rowSubheader, rowRepos, rowPM, rowDivider, rowPMHeader:
+	case rowTree, rowSubheader, rowRepos, rowPM, rowDivider, rowHeader, rowCreating:
 		return fmt.Sprintf("Look at %s.", r.tree)
 	}
 	return "Look at " + r.tree + "."
@@ -696,6 +757,29 @@ func (m *Model) coldStartCmd() tea.Cmd {
 			return actionDoneMsg{err: err}
 		}
 		return actionDoneMsg{msg: "PM"}
+	}
+}
+
+// removeAgent drops an agent from its supatree and closes its tab, which stops
+// it. The registry goes first: the sidebar may be inside that tab and not
+// survive the close.
+func (m *Model) removeAgent(tree, agent string) tea.Cmd {
+	ws := m.ws
+	return func() tea.Msg {
+		inst := m.instance(tree)
+		if inst == nil {
+			return actionDoneMsg{err: fmt.Errorf("supatree %q gone", tree)}
+		}
+		if _, err := supatree.RemoveAgent(inst.Root, agent); err != nil {
+			return actionDoneMsg{err: err}
+		}
+		msg := "removed agent " + supatree.TabName(tree, agent)
+		if zellij.IsInZellij() {
+			if warnings := supatree.CloseAgentTab(ws, tree, agent); len(warnings) > 0 {
+				msg += " (" + strings.Join(warnings, "; ") + ")"
+			}
+		}
+		return actionDoneMsg{msg: msg}
 	}
 }
 
@@ -742,13 +826,48 @@ func (m *Model) validatePMName(name string) error {
 	return nil
 }
 
+// startNewTree lists the supatree as being created and starts creating it.
+// Creation clones, fetches and runs the stack's setup, so it can take a while;
+// the placeholder row says it is under way instead of nothing happening until
+// it is done. A blank name is filled here rather than by the creator, so the
+// placeholder can carry the name the tree will have.
+func (m *Model) startNewTree(stack, name string) tea.Cmd {
+	if name == "" {
+		existing := make([]string, 0, len(m.insts)+len(m.creating))
+		for _, inst := range m.insts {
+			existing = append(existing, inst.Name)
+		}
+		existing = append(existing, m.creating...)
+		generated, err := git.GenerateName(existing)
+		if err != nil {
+			m.err = err
+			return nil
+		}
+		name = generated
+	}
+	m.creating = append(m.creating, name)
+	// The placeholder (and, for the first tree, the WIP heading) can land above
+	// the cursor — in front of the Reviews section — so keep it on its row.
+	var want *row
+	if r := m.selected(); r != nil {
+		cp := *r
+		want = &cp
+	}
+	m.rebuildRows()
+	if want != nil {
+		m.selectRow(*want)
+	}
+	m.msg = "creating " + name + "…"
+	return m.newTree(stack, name)
+}
+
 func (m *Model) newTree(stack, name string) tea.Cmd {
 	return func() tea.Msg {
 		inst, _, err := supatree.New(m.stCfg, supatree.CreateOptions{Stack: stack, Name: name})
 		if err != nil {
-			return actionDoneMsg{err: err}
+			return actionDoneMsg{err: err, settled: name}
 		}
-		return actionDoneMsg{msg: "created " + inst.Name, reveal: inst.Name}
+		return actionDoneMsg{msg: "created " + inst.Name, reveal: inst.Name, settled: name}
 	}
 }
 

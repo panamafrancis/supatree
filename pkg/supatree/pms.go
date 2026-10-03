@@ -315,11 +315,16 @@ func handOverOffset(from, to PM) {
 // closing a removed tree's tabs: the registry is the source of truth, and a
 // stray tab is closable by hand.
 func ClosePMTab(ws zellij.Workspace, p PM) []string {
+	return closeTab(ws, p.Tab(), p.Name)
+}
+
+// closeTab closes the tab named tab in every supatree session and drops its
+// layout. who names the tab's owner in the warnings.
+func closeTab(ws zellij.Workspace, tab, who string) []string {
 	sessions, err := zellij.ListSessions()
 	if err != nil {
-		return []string{fmt.Sprintf("could not list zellij sessions to close %s's tab: %v", p.Name, err)}
+		return []string{fmt.Sprintf("could not list zellij sessions to close %s's tab: %v", who, err)}
 	}
-	tab := p.Tab()
 	var warnings []string
 	for _, s := range sessions {
 		if s.Exited || !strings.HasPrefix(s.Name, ws.SessionPrefix) {

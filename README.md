@@ -89,7 +89,9 @@ supatree review fork <name>                     # turn the review into a proposa
 
 `supatree ls` (the sidebar in each supatree tab, and `supatree start`'s pane) is a TUI listing every supatree with its agents and member repos.
 
-The PMs have a section of their own pinned at the very top, **Product Managers**, above a divider — one `◆ <name>` row per PM, with `●` while its tab is open and `✉N` for requests it has not read yet. It is there even before any supatree exists; `gg` then `enter` (or `P` from anywhere) opens or focuses the top PM. `a` in the section adds a PM, `d` removes one. A cold `supatree start` opens the top PM for you; attaching to a running session leaves you where you were.
+The PMs have a section of their own pinned at the very top, **Product Managers**, above a divider — one `◆ <name>` row per PM, with `●` while its tab is open and `✉N` for requests it has not read yet. It is there even before any supatree exists; `gg` then `enter` (or `P` from anywhere) opens or focuses the top PM. `p` adds a PM, `d` on a PM row removes one. A cold `supatree start` opens the top PM for you; attaching to a running session leaves you where you were.
+
+Below it the supatrees are split in two: **WIP**, your own changes, and **Reviews**, the review trees `supatree review` made. Each heading appears once its section has a tree in it. A supatree you create with `n` is listed under WIP straight away, as `◌ <name>  creating…`, while its members are cloned and the stack's setup runs.
 
 | Key | Action |
 | --- | --- |
@@ -101,15 +103,16 @@ The PMs have a section of their own pinned at the very top, **Product Managers**
 | `h` / `l` (or `←` / `→`) | Collapse / expand; `h` closes the repositories section first, then the supatree |
 | `zM` / `zR` | Fold / unfold **every** supatree |
 | `Enter` / `o` | Open the selected agent, a shell in the selected member repo, or the PM on a PM row |
-| `a` | Add an agent to the selected supatree — on a member row, open that repo's agent; on a PM row, add a PM |
+| `a` | Add an agent to the selected supatree — on a member row, open that repo's agent |
+| `p` | Add a PM |
 | `n` | New supatree |
 | `s` | Sync the selected supatree |
-| `d` | Delete the selected supatree — on a PM row, remove that PM |
+| `d` | Delete the selected supatree — on an agent row, remove that agent and close its tab (not `main`, which goes with the tree); on a PM row, remove that PM |
 | `D` | Open (or focus) the dashboard tab |
 | `P` | Open (or focus) the top PM |
 | `m` | Hand the selected row to the top PM |
 | `r` | Refresh (forces a PR status fetch) |
-| `?` | Keybinding reference (any key closes it) |
+| `?` | Keybinding reference, Zellij's default keys included (`j`/`k` scroll it, any other key closes it) |
 | `q` | Quit (confirms in sidebar mode) |
 
 The mouse works too: the wheel scrolls the list and a click selects a row. Wheel scrolling pans the view without moving the cursor, so you can read further down the list and it stays put — the view snaps back to the cursor as soon as you press a movement key. When the list is taller than the pane it scrolls to keep the cursor in view.
