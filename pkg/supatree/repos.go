@@ -176,7 +176,10 @@ func ListCachedRepos() ([]CachedRepo, error) {
 		if !d.IsDir() || path == root {
 			return nil
 		}
-		if strings.HasPrefix(d.Name(), ".") {
+		// An in-progress clone (cloneInto's temp dir). Not every dot-dir: a
+		// local repository's cache key mirrors its path, which may well pass
+		// through one.
+		if strings.HasPrefix(d.Name(), ".") && strings.Contains(d.Name(), ".clone-") {
 			return filepath.SkipDir
 		}
 		if isClone(path) {

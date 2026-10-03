@@ -160,3 +160,26 @@ func TestRunSetup(t *testing.T) {
 		t.Errorf("meta does not record the run: %+v", meta)
 	}
 }
+
+// A local repository under a dot-directory is still listed; an in-progress
+// clone is not.
+func TestListCachedReposDotDirs(t *testing.T) {
+	testutil.IsolateHome(t)
+	hidden := filepath.Join(t.TempDir(), ".hidden", "repo")
+	if err := os.MkdirAll(hidden, 0755); err != nil {
+		t.Fatal(err)
+	}
+	run(t, hidden, "init", "-q")
+	c := &Config{}
+	if _, err := c.ResolveMember("repo", hidden); err != nil {
+		t.Fatal(err)
+	}
+	writeFile(t, filepath.Join(ReposDir(), "github.com", "o", ".r.clone-123", ".git", "HEAD"), "x")
+	repos, err := ListCachedRepos()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(repos) != 1 || !strings.Contains(repos[0].Key, ".hidden") {
+		t.Errorf("ListCachedRepos = %+v, want just the repo under .hidden", repos)
+	}
+}
