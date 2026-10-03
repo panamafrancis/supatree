@@ -140,6 +140,12 @@ func withAgentExec(env map[string]string) map[string]string {
 	if err != nil {
 		return env
 	}
+	// The shim is shared by every pane: never point it at a binary that is no
+	// longer there (a long-lived sidebar outliving an upgrade), or every agent
+	// pane would vanish at once.
+	if _, err := os.Stat(exe); err != nil {
+		return env
+	}
 	nono, err := exec.LookPath("nono")
 	if err != nil {
 		return env
