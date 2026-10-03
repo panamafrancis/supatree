@@ -189,25 +189,22 @@ func writeTestFile(t *testing.T, path, content string) {
 	}
 }
 
-// press sends keys: a named key ("enter", "esc", "down", "up") or the runes
-// of anything else, one key at a time as a terminal would. Each is tracked
-// until handled, so settling after press waits for what the keys set off.
-func (s *sidebar) press(keys ...string) {
+// press sends keys one at a time, as a terminal would: a tea.KeyType for a
+// named key (tea.KeyEnter, tea.KeyEsc, ...), or a string whose runes are typed.
+// Each is tracked until handled, so settling after press waits for what the
+// keys set off.
+func (s *sidebar) press(keys ...any) {
 	send := func(k tea.KeyMsg) { s.tm.Send(trackedMsg{id: s.cmds.register(), msg: k}) }
 	for _, k := range keys {
-		switch k {
-		case "enter":
-			send(tea.KeyMsg{Type: tea.KeyEnter})
-		case "esc":
-			send(tea.KeyMsg{Type: tea.KeyEsc})
-		case "down":
-			send(tea.KeyMsg{Type: tea.KeyDown})
-		case "up":
-			send(tea.KeyMsg{Type: tea.KeyUp})
-		default:
+		switch k := k.(type) {
+		case tea.KeyType:
+			send(tea.KeyMsg{Type: k})
+		case string:
 			for _, r := range k {
 				send(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{r}})
 			}
+		default:
+			s.t.Fatalf("press: %T is neither a tea.KeyType nor a string", k)
 		}
 	}
 }

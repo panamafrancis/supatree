@@ -4,6 +4,7 @@ import (
 	"testing"
 	"time"
 
+	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/x/exp/teatest"
 )
 
@@ -54,6 +55,6 @@ func TestSidebarEnterOpensAgentTab(t *testing.T) {
 	s.waitFor("reviewer")
 	s.press("G", "k") // paris is the last tree; reviewer is above its repositories
 	s.waitFor("enter open")
-	s.press("enter")
+	s.press(tea.KeyEnter)
 	s.waitForZellij("paris:reviewer")
 }
