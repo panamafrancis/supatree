@@ -19,12 +19,12 @@ func (m *Model) View() string {
 	// The reference replaces the list rather than overlaying it: the sidebar is
 	// a narrow column, so there is nowhere to float a panel over.
 	if m.mode == modeHelp {
-		b.WriteString(helpView())
+		b.WriteString(m.helpView())
 		return b.String()
 	}
 
 	footer := m.footer()
-	if len(m.insts) == 0 {
+	if len(m.insts) == 0 && len(m.creating) == 0 {
 		// The PM section is still there with no supatrees — it is reachable (and
 		// can create one) before anything else exists.
 		for i, r := range m.rows {
@@ -89,8 +89,10 @@ func (m *Model) viewport(avail int) (int, int) {
 
 func (m *Model) renderRow(r row, selected bool) string {
 	switch r.kind {
-	case rowPMHeader:
+	case rowHeader:
 		return "  " + styleSub.Render(r.label)
+	case rowCreating:
+		return "  " + styleMuted.Render("◌ "+r.label+"  creating…")
 	case rowPM:
 		return m.renderPM(r.label, selected)
 	case rowDivider:
@@ -287,6 +289,8 @@ func (m *Model) footer() string {
 		return prompt
 	case modeConfirmDeletePM:
 		return styleDirty.Render(fmt.Sprintf("remove PM %q? [y/N]", m.actionPM))
+	case modeConfirmDeleteAgent:
+		return styleDirty.Render(fmt.Sprintf("remove agent %q? [y/N]", supatree.TabName(m.actionTree, m.actionAgent)))
 	case modeConfirmQuit:
 		return styleDirty.Render("quit sidebar? [y/N]")
 	case modeHelp:
@@ -305,12 +309,12 @@ func (m *Model) footer() string {
 			openHint = "enter shell"
 		case rowPM:
 			openHint = "enter PM"
-		case rowTree, rowSubheader, rowRepos, rowAgent, rowDivider, rowPMHeader:
+		case rowTree, rowSubheader, rowRepos, rowAgent, rowDivider, rowHeader, rowCreating:
 		}
 	}
 	// The motions moved into `?` — the footer keeps the actions, which are the
 	// ones that are not guessable from vim habits.
-	parts := []string{openHint, "space fold", "a agent", "n new", "s sync", "d del", "D dash", "r refresh", "? help", "q quit"}
+	parts := []string{openHint, "space fold", "a agent", "p PM", "n new", "s sync", "d del", "D dash", "r refresh", "? help", "q quit"}
 	if m.prHint != "" {
 		parts = append(parts, "("+m.prHint+")")
 	}
@@ -409,11 +413,30 @@ func zellijTabs() (map[string]bool, error) {
 	return zellij.TabNames()
 }
 
-// helpView is the `?` reference. It is a plain block rather than the footer's
+// helpView renders the `?` reference, windowed to the pane: it is taller than
+// most sidebars, so j/k scroll it (see updateHelp) and the last line says so
+// whenever some of it is out of sight.
+func (m *Model) helpView() string {
+	lines := helpLines()
+	avail := m.height - 2 // the "supatree" header and the closing hint
+	if m.height <= 0 || len(lines) <= avail {
+		m.helpScroll = 0
+		return strings.Join(lines, "\n") + "\n" + styleMuted.Render("press any key to close")
+	}
+	if avail < 1 {
+		avail = 1
+	}
+	m.helpScroll = min(max(m.helpScroll, 0), len(lines)-avail)
+	end := m.helpScroll + avail
+	hint := fmt.Sprintf("j/k scroll (%d/%d) · other keys close", end, len(lines))
+	return strings.Join(lines[m.helpScroll:end], "\n") + "\n" + styleMuted.Render(hint)
+}
+
+// helpLines is the `?` reference. It is a plain block rather than the footer's
 // wrapped one-liner because the sidebar is narrow: every line is kept short
 // enough to survive a 25%-width pane without folding.
-func helpView() string {
-	lines := []string{
+func helpLines() []string {
+	return []string{
 		styleHeader.Render("Navigation"),
 		"  j/k ↑↓   move",
 		"  ctrl+d/u half page",
@@ -433,19 +456,22 @@ func helpView() string {
 		"           PM on a PM row",
 		"  a        new named agent,",
 		"           repo agent on a repo",
+		"  p        new PM",
 		"  D        dashboard",
 		"  P        top PM",
 		"  m        hand this row to the",
 		"           top PM",
 		"",
-		styleHeader.Render("Product Managers"),
-		"  a        new PM",
-		"  d        remove PM",
+		styleHeader.Render("Remove"),
+		"  d        on a PM: remove it",
+		"           on an agent: remove",
+		"           it (closes its tab)",
+		"           elsewhere: delete",
+		"           the supatree",
 		"",
 		styleHeader.Render("Supatrees"),
 		"  n        new supatree",
 		"  s        sync members",
-		"  d        delete supatree",
 		"  S        new stack",
 		"",
 		styleHeader.Render("Global"),
@@ -453,13 +479,38 @@ func helpView() string {
 		"  ?        this help",
 		"  q        quit",
 		"",
-		styleHeader.Render("Zellij"),
-		"  Alt+←/→     panes",
-		"  Ctrl+t ←/→  tabs",
+		// Zellij's default keybindings: supatree ships no keymap of its own.
+		styleHeader.Render("Zellij panes"),
+		"  Alt+n       new pane",
+		"  Alt+←↓↑→    move focus",
+		"  Alt+= / -   grow / shrink",
+		"  Alt+f       floating panes",
+		"  Ctrl+p r    split right",
+		"  Ctrl+p d    split down",
+		"  Ctrl+p x    close pane",
+		"  Ctrl+p f    fullscreen",
+		"  Ctrl+p w    float / embed",
+		"  Ctrl+p c    rename pane",
+		"  Ctrl+n      resize mode",
+		"  Ctrl+h      move mode",
+		"",
+		styleHeader.Render("Zellij tabs"),
+		"  Ctrl+t ←/→  prev / next",
+		"  Ctrl+t 1-9  go to tab",
+		"  Ctrl+t n    new tab",
+		"  Ctrl+t x    close tab",
+		"  Ctrl+t r    rename tab",
+		"  Alt+i / o   move tab",
+		"",
+		styleHeader.Render("Zellij session"),
+		"  Ctrl+s      scroll mode",
+		"  Ctrl+s s    search",
+		"  Ctrl+s e    scrollback in",
+		"              $EDITOR",
+		"  Ctrl+g      lock keys",
+		"              (pass through)",
+		"  Ctrl+o w    sessions",
 		"  Ctrl+o d    detach",
 		"  Ctrl+q      quit session",
-		"",
-		styleMuted.Render("press any key to close"),
 	}
-	return strings.Join(lines, "\n")
 }

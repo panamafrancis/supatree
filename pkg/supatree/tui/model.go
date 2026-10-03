@@ -37,10 +37,11 @@ const (
 	modeNewTreeName // naming the supatree
 	modeConfirmDelete
 	modeConfirmQuit
-	modeNewPM // naming a new PM (a on the PM section)
+	modeNewPM // naming a new PM (p)
 	modeConfirmDeletePM
-	modeHelp         // showing the keybinding reference
-	modeNewStackName // naming a new stack (S)
+	modeHelp               // showing the keybinding reference
+	modeNewStackName       // naming a new stack (S)
+	modeConfirmDeleteAgent // removing an agent (d on an agent row)
 )
 
 type rowKind int
@@ -52,23 +53,29 @@ const (
 	rowAgent
 	rowMember
 	rowPM       // one PM agent; the section sits above every supatree
-	rowDivider  // the rule separating the PM section from the supatrees
-	rowPMHeader // the "Product Managers" heading
+	rowDivider  // the rule separating one section from the next
+	rowHeader   // a section heading: "Product Managers", "WIP", "Reviews"
+	rowCreating // a supatree still being created — a placeholder until it lands
 )
 
 // selectable reports whether the cursor may rest on a row of this kind. The
-// headings and the divider are decoration; everything else is something enter
-// acts on.
+// headings, the divider and a tree still being created are decoration;
+// everything else is something enter acts on.
 func (k rowKind) selectable() bool {
-	return k != rowSubheader && k != rowDivider && k != rowPMHeader
+	return k != rowSubheader && k != rowDivider && k != rowHeader && k != rowCreating
 }
 
-// pmHeaderLabel heads the PM section.
-const pmHeaderLabel = "Product Managers"
+// The section headings. Review trees get a section of their own: they are
+// someone else's work, and mixed in with yours they read as more of it.
+const (
+	pmHeaderLabel      = "Product Managers"
+	wipHeaderLabel     = "WIP"
+	reviewsHeaderLabel = "Reviews"
+)
 
-// pmSectionRows is how many rows the PM section occupies above the first
-// supatree with the single default PM (its heading, the PM row, the divider).
-const pmSectionRows = 3
+// pmSectionRows is how many rows sit above the first supatree with the single
+// default PM: the PM heading, the PM row, the divider and the WIP heading.
+const pmSectionRows = 4
 
 // reposLabel is the text of the repositories section header. It is also the row
 // identity setReposCollapse re-selects on, so the two must agree.
@@ -110,6 +117,9 @@ type Model struct {
 	pms         []supatree.PM   // the PMs, top first
 	pmPending   map[string]int  // per PM: requests queued for it that it has not read yet
 	actionPM    string          // PM targeted by the active input mode
+	actionAgent string          // agent targeted by modeConfirmDeleteAgent (in actionTree)
+	creating    []string        // supatrees being created by this sidebar, shown until they land
+	helpScroll  int             // first line of the `?` reference in view
 	fetching    bool            // a PR fetch is in flight
 	ghAvailable bool            // gh usable; false after a permanent error suppresses tick fetches
 	prHint      string          // persistent PR-fetch hint (e.g. "gh rate limited")
@@ -331,37 +341,77 @@ func (m *Model) rebuildRows() {
 	// The PMs come first and are always there, even with no supatrees: they are
 	// the agents that are not inside any of them, so they get a section of their
 	// own rather than being mistaken for more trees.
-	rows := []row{{kind: rowPMHeader, label: pmHeaderLabel}}
+	rows := []row{{kind: rowHeader, label: pmHeaderLabel}}
 	for _, p := range m.pms {
 		rows = append(rows, row{kind: rowPM, label: p.Name})
 	}
-	rows = append(rows, row{kind: rowDivider})
+	var wip, reviews []*supatree.Instance
 	for _, inst := range m.insts {
-		rows = append(rows, row{kind: rowTree, tree: inst.Name, label: inst.Name})
-		if m.ui.TreeCollapsed(inst.Name) {
-			continue
+		if inst.Reviewing() {
+			reviews = append(reviews, inst)
+		} else {
+			wip = append(wip, inst)
 		}
-		agents, _ := supatree.LoadAgents(inst.Root)
-		rows = append(rows, row{kind: rowSubheader, tree: inst.Name, label: "agents"})
-		if len(agents) == 0 {
-			rows = append(rows, row{kind: rowAgent, tree: inst.Name, label: "main"})
+	}
+	// A tree being created is listed under WIP straight away — creation clones
+	// and runs the stack's setup, which can take a while — and gives way to the
+	// real row as soon as the tree's state is on disk.
+	var creating []string
+	for _, name := range m.creating {
+		if m.instance(name) == nil {
+			creating = append(creating, name)
 		}
-		for _, a := range agents {
-			rows = append(rows, row{kind: rowAgent, tree: inst.Name, label: a.Name})
+	}
+	// Each tree section appears only once it has something in it, so a fresh
+	// install shows the PMs alone and the Reviews heading waits for a review.
+	if len(wip) > 0 || len(creating) > 0 {
+		rows = append(rows, row{kind: rowDivider}, row{kind: rowHeader, label: wipHeaderLabel})
+		for _, inst := range wip {
+			rows = m.appendTree(rows, inst)
 		}
-		// The repositories header is a row of its own rather than a plain
-		// subheader: it folds, and folded it still reports every member's PR
-		// status as a count badge.
-		rows = append(rows, row{kind: rowRepos, tree: inst.Name, label: reposLabel})
-		if m.ui.ReposCollapsed(inst.Name) {
-			continue
+		for _, name := range creating {
+			rows = append(rows, row{kind: rowCreating, tree: name, label: name})
 		}
-		for _, mem := range inst.Members {
-			rows = append(rows, row{kind: rowMember, tree: inst.Name, label: mem.Alias, alias: mem.Alias})
+	}
+	if len(reviews) > 0 {
+		rows = append(rows, row{kind: rowDivider}, row{kind: rowHeader, label: reviewsHeaderLabel})
+		for _, inst := range reviews {
+			rows = m.appendTree(rows, inst)
 		}
+	}
+	if len(wip) == 0 && len(reviews) == 0 && len(creating) == 0 {
+		rows = append(rows, row{kind: rowDivider})
 	}
 	m.rows = rows
 	m.clampCursor()
+}
+
+// appendTree adds one supatree's rows: its own, then (unless folded) its agents
+// and its repositories section.
+func (m *Model) appendTree(rows []row, inst *supatree.Instance) []row {
+	rows = append(rows, row{kind: rowTree, tree: inst.Name, label: inst.Name})
+	if m.ui.TreeCollapsed(inst.Name) {
+		return rows
+	}
+	agents, _ := supatree.LoadAgents(inst.Root)
+	rows = append(rows, row{kind: rowSubheader, tree: inst.Name, label: "agents"})
+	if len(agents) == 0 {
+		rows = append(rows, row{kind: rowAgent, tree: inst.Name, label: supatree.MainAgent})
+	}
+	for _, a := range agents {
+		rows = append(rows, row{kind: rowAgent, tree: inst.Name, label: a.Name})
+	}
+	// The repositories header is a row of its own rather than a plain
+	// subheader: it folds, and folded it still reports every member's PR
+	// status as a count badge.
+	rows = append(rows, row{kind: rowRepos, tree: inst.Name, label: reposLabel})
+	if m.ui.ReposCollapsed(inst.Name) {
+		return rows
+	}
+	for _, mem := range inst.Members {
+		rows = append(rows, row{kind: rowMember, tree: inst.Name, label: mem.Alias, alias: mem.Alias})
+	}
+	return rows
 }
 
 func (m *Model) instance(name string) *supatree.Instance {
@@ -448,4 +498,7 @@ type actionDoneMsg struct {
 	// post-action reload — used so a freshly created tree is scrolled into view
 	// instead of being added off-screen while the cursor stays where it was.
 	reveal string
+	// settled, when set, is a supatree whose creation has finished, one way or
+	// the other: its placeholder row comes out.
+	settled string
 }

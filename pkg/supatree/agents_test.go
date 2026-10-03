@@ -1,6 +1,7 @@
 package supatree
 
 import (
+	"errors"
 	"strings"
 	"testing"
 	"time"
@@ -121,5 +122,35 @@ func TestEnsureAgentRecordsAddress(t *testing.T) {
 	}
 	if len(agents) != 1 || agents[0].Address != a.Address {
 		t.Errorf("address did not persist: %+v", agents)
+	}
+}
+
+func TestRemoveAgent(t *testing.T) {
+	testutil.IsolateHome(t)
+	root := t.TempDir()
+	now := time.Now()
+	for _, name := range []string{MainAgent, "reviewer", "tester"} {
+		if _, _, err := EnsureAgent(root, "canberra", name, defaultModelKey, now); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	if _, err := RemoveAgent(root, MainAgent); !errors.Is(err, ErrMainAgent) {
+		t.Fatalf("RemoveAgent(main) error = %v, want ErrMainAgent", err)
+	}
+	if _, err := RemoveAgent(root, "nobody"); err == nil {
+		t.Fatal("RemoveAgent of an unknown agent succeeded")
+	}
+	removed, err := RemoveAgent(root, "reviewer")
+	if err != nil || removed.Name != "reviewer" {
+		t.Fatalf("RemoveAgent(reviewer) = %+v, %v", removed, err)
+	}
+	agents, _ := LoadAgents(root)
+	names := make([]string, 0, len(agents))
+	for _, a := range agents {
+		names = append(names, a.Name)
+	}
+	if strings.Join(names, ",") != "main,tester" {
+		t.Fatalf("agents after removal = %v, want main,tester", names)
 	}
 }

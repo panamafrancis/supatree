@@ -2,6 +2,7 @@ package supatree
 
 import (
 	"crypto/rand"
+	"errors"
 	"fmt"
 	"os"
 	"time"
@@ -9,6 +10,7 @@ import (
 	"gopkg.in/yaml.v3"
 
 	"github.com/panamafrancis/workbench/pkg/git"
+	"github.com/panamafrancis/workbench/pkg/zellij"
 )
 
 // Agent is one named LLM agent attached to a supatree. Several agents share the
@@ -99,6 +101,42 @@ func EnsureAgent(root, tree, name, model string, now time.Time) (Agent, bool, er
 		return Agent{}, false, err
 	}
 	return a, true, nil
+}
+
+// ErrMainAgent is returned when removing a tree's main agent: it is the tree's
+// own tab, and goes away with the tree rather than on its own.
+var ErrMainAgent = errors.New("the main agent cannot be removed — delete the supatree instead")
+
+// RemoveAgent drops a named agent from a supatree's agents.yml, returning the
+// record it removed. Its session is forgotten with it, so opening an agent of
+// the same name later starts a fresh conversation. Close its tab with
+// CloseAgentTab afterwards.
+func RemoveAgent(root, name string) (Agent, error) {
+	if name == MainAgent {
+		return Agent{}, ErrMainAgent
+	}
+	agents, err := LoadAgents(root)
+	if err != nil {
+		return Agent{}, err
+	}
+	for i, a := range agents {
+		if a.Name != name {
+			continue
+		}
+		rest := append(agents[:i:i], agents[i+1:]...)
+		if err := saveAgents(root, rest); err != nil {
+			return Agent{}, err
+		}
+		return a, nil
+	}
+	return Agent{}, fmt.Errorf("no agent named %q", name)
+}
+
+// CloseAgentTab closes an agent's tab in every supatree session, which stops
+// the agent. Best effort, like ClosePMTab: it runs after RemoveAgent, because
+// the caller may be the sidebar inside that tab.
+func CloseAgentTab(ws zellij.Workspace, tree, agent string) []string {
+	return closeTab(ws, TabName(tree, agent), TabName(tree, agent))
 }
 
 // newSessionID returns a random RFC 4122 version-4 UUID string.
