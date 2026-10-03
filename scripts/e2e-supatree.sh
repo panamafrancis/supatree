@@ -348,6 +348,9 @@ rm -rf "$OLD"
 # and check the boundary holds (see ENFORCE at the top).
 echo "--- sandbox enforcement ---"
 if [ -n "$ENFORCE" ]; then
+    # supatree-agent extends claude-code, which current nono installs on first
+    # use and, with no TTY, only when told it may.
+    export NONO_AUTO_MIGRATE=1
     supatree init >/dev/null 2>&1 || fail "supatree init failed"
     supatree new --stack=s --name=lima >/dev/null
     supatree new --stack=s --name=quito >/dev/null
