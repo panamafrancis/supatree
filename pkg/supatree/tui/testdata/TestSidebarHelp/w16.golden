@@ -1,0 +1,30 @@
+supatree
+  j/k ↑↓   move
+  ctrl+d/u half
+  page
+  gg / G
+    first / last
+  } / {
+    next / prev
+    tree
+  wheel
+    scroll
+  click
+    select
+
+Folding
+  space
+    fold this
+    section
+  h / l
+    close / open
+  zM / zR
+    fold /
+    unfold all
+
+Open
+  enter/o
+    agent, or
+j/k scroll      
+(27/139) · other
+keys close      

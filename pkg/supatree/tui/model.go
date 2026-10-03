@@ -478,8 +478,12 @@ func (m *Model) selectedInTree() *row {
 	return nil
 }
 
+// tick schedules the periodic refresh. Tests that run the sidebar as a
+// program replace it, sending tickMsg themselves when a scenario needs one.
+var tick = tea.Tick
+
 func (m *Model) tickCmd() tea.Cmd {
-	return tea.Tick(tickInterval, func(t time.Time) tea.Msg { return tickMsg{} })
+	return tick(tickInterval, func(t time.Time) tea.Msg { return tickMsg{} })
 }
 
 type tickMsg struct{}

@@ -266,11 +266,23 @@ The harness is in `pkg/supatree/tui/harness_test.go`; the tests are in
   whichever tests run next. Leftover commands also write into temp dirs that
   are being deleted.
 
-  `trackedModel` wraps the sidebar and tracks each command until `Update` has
-  handled its result. `finish()` and the test cleanup wait for it to settle.
-  The 30-second tick is told apart by age (over 250ms), since it only sleeps.
-- **`finish()` settles before quitting,** so the final screen never depends on
-  how fast a fake answered.
+  `trackedModel` wraps the sidebar. Every command, and every key a test
+  sends, is registered the moment it is created and stays registered until
+  `Update` has handled its result. Whatever `Update` returns is registered
+  before the result that caused it is released, so there is never a gap where
+  nothing seems to be running. Messages the program loop handles itself
+  (quit, batches) pass through unwrapped. After a quit, only commands still
+  executing are waited for.
+- **The tick is replaced in tests** (`tick` in `model.go`) with one that never
+  fires. A scenario about the periodic refresh sends `tickMsg` itself.
+- **`finish()` and the cleanup settle before quitting,** so the final screen
+  never depends on how fast a fake answered. After the program quits, no
+  result can reach `Update`.
+- **The harness pins sidebar mode** (`SUPATREE_SIDEBAR=1`, a session name, no
+  active tree), so your shell can't change `q`'s confirmation or the
+  cold-start PM.
+- **A refusing nono fake has to reset the `supatree` package's preflight
+  cache** between tests. That comes with scenario 19.
 - **Your shell's `CLAUDE_CONFIG_DIR` is moved into the sandbox.** Opening an
   agent touches Claude's config.
 - **Run under `-race` as well.** The tracker is shared between the program's
@@ -280,7 +292,7 @@ The harness is in `pkg/supatree/tui/harness_test.go`; the tests are in
 
 1. ~~teatest dependency, `TestMain` colour profile, `fakeBin`, and the zellij
    and gh fakes. Port one existing test (help) to prove the harness.~~ Done,
-   with scenario 17 (enter opens an agent's tab).
+   with scenario 17 (enter opens an agent's tab) and q's confirmation.
 2. ~~Shared fixture builder matching `ux-env.sh`'s trees. Golden for scenario
    1.~~ Done (berlin and paris; oslo and the extra PM still to add).
 3. The **new** agent and PM scenarios (17–19, 21, 23, 25–26, 29). These are

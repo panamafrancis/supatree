@@ -37,8 +37,6 @@ type sidebarOpts struct {
 	inZellij bool
 	// tabs are the tab names the fake zellij reports as open.
 	tabs []string
-	// brokenProfiles are nono profiles the fake nono refuses.
-	brokenProfiles []string
 }
 
 // sidebar is a running sidebar under test.
@@ -47,16 +45,6 @@ type sidebar struct {
 	tm        *teatest.TestModel
 	cmds      *trackedModel
 	zellijLog string
-	world     world
-}
-
-// world is the fixture the sidebar runs over — the same trees
-// scripts/ux-env.sh seeds, so the two layers describe one world.
-type world struct {
-	cfg *supatree.Config
-	// berlin is fresh; paris has a commit on api, an uncommitted file in web,
-	// and a named agent, reviewer, beside main.
-	berlin, paris *supatree.Instance
 }
 
 // startSidebar builds the world, installs the fakes and starts the sidebar.
@@ -77,16 +65,27 @@ func startSidebar(t *testing.T, o sidebarOpts) *sidebar {
 	} else {
 		t.Setenv("ZELLIJ", "")
 	}
-	w := buildWorld(t)
+	// Run as the sidebar pane does, not as whatever the developer's shell
+	// says: it decides q's confirmation and the cold-start PM.
+	t.Setenv("SUPATREE_SIDEBAR", "1")
+	t.Setenv("ZELLIJ_SESSION_NAME", "st-test")
+	t.Setenv("SUPATREE_ACTIVE_TREE", "")
+	// No timer: it would outlive the test. A scenario about the periodic
+	// refresh sends tickMsg itself.
+	saved := tick
+	tick = func(time.Duration, func(time.Time) tea.Msg) tea.Cmd { return nil }
+	t.Cleanup(func() { tick = saved })
+	cfg := buildWorld(t)
 
-	tracked := &trackedModel{inner: New(w.cfg, zellij.Workspace{LayoutsDir: supatree.LayoutsDir()}), running: map[int]time.Time{}}
+	tracked := &trackedModel{inner: New(cfg, zellij.Workspace{LayoutsDir: supatree.LayoutsDir()}), running: map[int]bool{}}
 	tm := teatest.NewTestModel(t, tracked, teatest.WithInitialTermSize(o.width, o.height))
-	s := &sidebar{t: t, tm: tm, cmds: tracked, zellijLog: zellijLog, world: w}
+	s := &sidebar{t: t, tm: tm, cmds: tracked, zellijLog: zellijLog}
 	// Registered after the temp dirs, so it runs before they are removed.
+	// Settle first: once the program has quit, no result can reach Update.
 	t.Cleanup(func() {
+		tracked.settle(t)
 		_ = tm.Quit()
 		tm.WaitFinished(t, teatest.WithFinalTimeout(5*time.Second))
-		tracked.settle(t)
 	})
 	return s
 }
@@ -109,12 +108,10 @@ exit 0`)
 	// cache instead.
 	fakeBin(t, bin, "gh", `echo "gh: not logged in to any hosts" >&2
 exit 4`)
-	// nono: accepts every profile but the broken ones, failing those the way a
-	// profile nono cannot parse does.
-	fakeBin(t, bin, "nono", `case " `+strings.Join(o.brokenProfiles, " ")+` " in *" $3 "*)
-  echo "  [err]  Profile parse error: unknown field"; exit 1;;
-esac
-echo "  Result: valid"`)
+	// nono: accepts every profile. (A refusing variant needs the supatree
+	// package's preflight cache reset between tests; it comes with the
+	// failed-launch scenarios.)
+	fakeBin(t, bin, "nono", `echo "  Result: valid"`)
 	t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
 	return logPath
 }
@@ -127,8 +124,11 @@ func fakeBin(t *testing.T, dir, name, body string) {
 	}
 }
 
-// buildWorld creates the fixture repos, a stack over them, and the trees.
-func buildWorld(t *testing.T) world {
+// buildWorld creates the fixture repos, a stack over them, and the trees the
+// sidebar runs over — the world scripts/ux-env.sh seeds, so the two layers
+// describe the same thing: berlin is fresh; paris has a commit on api, an
+// uncommitted file in web, and a named agent, reviewer, beside main.
+func buildWorld(t *testing.T) *supatree.Config {
 	t.Helper()
 	for _, k := range []string{"GIT_AUTHOR", "GIT_COMMITTER"} {
 		t.Setenv(k+"_NAME", "ux")
@@ -159,16 +159,17 @@ func buildWorld(t *testing.T) world {
 		}
 		return inst
 	}
-	w := world{cfg: cfg, berlin: newTree(berlin), paris: newTree("paris")}
+	newTree(berlin)
+	p := newTree(paris)
 
-	api := w.paris.FindMember("api").Path
+	api := p.FindMember("api").Path
 	writeTestFile(t, filepath.Join(api, "README.md"), "# api\nchanged\n")
 	runGit(t, api, "commit", "-qam", "api: a change")
-	writeTestFile(t, filepath.Join(w.paris.FindMember("web").Path, "draft.txt"), "draft\n")
-	if _, _, err := supatree.EnsureAgent(w.paris.Root, "paris", "reviewer", "claude", now); err != nil {
+	writeTestFile(t, filepath.Join(p.FindMember("web").Path, "draft.txt"), "draft\n")
+	if _, _, err := supatree.EnsureAgent(p.Root, paris, "reviewer", "claude", now); err != nil {
 		t.Fatal(err)
 	}
-	return w
+	return cfg
 }
 
 // runGit runs git in dir (the test's working directory when dir is "").
@@ -189,21 +190,23 @@ func writeTestFile(t *testing.T, path, content string) {
 }
 
 // press sends keys: a named key ("enter", "esc", "down", "up") or the runes
-// of anything else, one key at a time as a terminal would.
+// of anything else, one key at a time as a terminal would. Each is tracked
+// until handled, so settling after press waits for what the keys set off.
 func (s *sidebar) press(keys ...string) {
+	send := func(k tea.KeyMsg) { s.tm.Send(trackedMsg{id: s.cmds.register(), msg: k}) }
 	for _, k := range keys {
 		switch k {
 		case "enter":
-			s.tm.Send(tea.KeyMsg{Type: tea.KeyEnter})
+			send(tea.KeyMsg{Type: tea.KeyEnter})
 		case "esc":
-			s.tm.Send(tea.KeyMsg{Type: tea.KeyEsc})
+			send(tea.KeyMsg{Type: tea.KeyEsc})
 		case "down":
-			s.tm.Send(tea.KeyMsg{Type: tea.KeyDown})
+			send(tea.KeyMsg{Type: tea.KeyDown})
 		case "up":
-			s.tm.Send(tea.KeyMsg{Type: tea.KeyUp})
+			send(tea.KeyMsg{Type: tea.KeyUp})
 		default:
 			for _, r := range k {
-				s.tm.Send(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{r}})
+				send(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{r}})
 			}
 		}
 	}
@@ -265,10 +268,15 @@ func (s *sidebar) finish() *Model {
 // enough to open the zellij package's process-wide circuit breaker, which then
 // skips every zellij call for a minute, in whatever tests run next.
 type trackedModel struct {
-	inner   *Model
-	mu      sync.Mutex
-	next    int
-	running map[int]time.Time
+	inner *Model
+	mu    sync.Mutex
+	next  int
+	// running maps each tracked id to whether it is still executing (true)
+	// or has returned a result Update has yet to handle (false).
+	running map[int]bool
+	// quit is set once a quit has gone by: results still to be handled after
+	// it never will be, so only what is executing is worth waiting for.
+	quit bool
 }
 
 func (w *trackedModel) Init() tea.Cmd { return w.track(w.inner.Init()) }
@@ -276,7 +284,9 @@ func (w *trackedModel) Init() tea.Cmd { return w.track(w.inner.Init()) }
 func (w *trackedModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	// A command counts as running until its result has been handled, not
 	// just returned: a test waiting for the sidebar to settle wants the
-	// screen that result produces.
+	// screen that result produces. Any command handling it returns is
+	// registered (by track) before this one is let go, so there is no moment
+	// in between when nothing seems to be running.
 	if env, ok := msg.(trackedMsg); ok {
 		defer w.done(env.id)
 		msg = env.msg
@@ -287,41 +297,57 @@ func (w *trackedModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 func (w *trackedModel) View() string { return w.inner.View() }
 
-// trackedMsg carries a tracked command's result to Update.
+// trackedMsg carries a tracked command's result, or a test's key, to Update.
 type trackedMsg struct {
 	id  int
 	msg tea.Msg
 }
 
-// track wraps cmd to record it from the moment it starts until Update has
-// handled its result. A batch is not handled by Update but run by the program,
-// so the batch itself is done once it returns, and each of its commands is
-// tracked in turn.
+// track registers cmd as running from now until Update has handled its
+// result. Results the program loop handles itself never reach Update, so they
+// pass through unwrapped and the command is done when it returns: quitting,
+// and a batch, whose commands are each tracked in turn.
 func (w *trackedModel) track(cmd tea.Cmd) tea.Cmd {
 	if cmd == nil {
 		return nil
 	}
+	id := w.register()
 	return func() tea.Msg {
-		w.mu.Lock()
-		id := w.next
-		w.next++
-		w.running[id] = time.Now()
-		w.mu.Unlock()
 		msg := cmd()
 		switch msg := msg.(type) {
 		case tea.BatchMsg:
-			w.done(id)
 			for i := range msg {
 				msg[i] = w.track(msg[i])
 			}
+			w.done(id)
+			return msg
+		case tea.QuitMsg:
+			w.mu.Lock()
+			w.quit = true
+			w.mu.Unlock()
+			w.done(id)
 			return msg
 		case nil:
 			w.done(id)
-			return nil
+			return msg
 		default:
+			w.mu.Lock()
+			w.running[id] = false
+			w.mu.Unlock()
 			return trackedMsg{id: id, msg: msg}
 		}
 	}
+}
+
+// register records something as running — a command, or a key on its way —
+// and returns its id for done.
+func (w *trackedModel) register() int {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	id := w.next
+	w.next++
+	w.running[id] = true
+	return id
 }
 
 func (w *trackedModel) done(id int) {
@@ -330,19 +356,16 @@ func (w *trackedModel) done(id int) {
 	w.mu.Unlock()
 }
 
-// timerAge is how long a command must have been running to count as a timer —
-// the sidebar's tick sleeps for half a minute and then only returns a message,
-// so it is not waited for. Everything else finishes in milliseconds.
-const timerAge = 250 * time.Millisecond
-
-// settle waits until no command but a timer is running or awaiting Update.
+// settle waits until every command has run and its result been handled — or,
+// after a quit, until nothing is executing.
 func (w *trackedModel) settle(t *testing.T) {
+	t.Helper()
 	deadline := time.Now().Add(5 * time.Second)
 	for {
 		w.mu.Lock()
 		busy := 0
-		for _, started := range w.running {
-			if time.Since(started) < timerAge {
+		for _, executing := range w.running {
+			if executing || !w.quit {
 				busy++
 			}
 		}

@@ -444,6 +444,10 @@ func wrapHanging(s string, width int, keyed bool) string {
 	// Too narrow to keep the description beside its key: the key takes a line
 	// of its own and the description folds under it, indented a little.
 	pad = min(pad, narrowHang)
+	if width-pad < 1 {
+		// Narrower than the hang itself: nothing fits beside it.
+		return wrapText(s, width)
+	}
 	key := strings.TrimRight(prefix, " ")
 	if key == "" {
 		return hang(rest, width, pad)

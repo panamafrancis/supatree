@@ -2,6 +2,7 @@ package tui
 
 import (
 	"errors"
+	"fmt"
 	"path/filepath"
 	"slices"
 	"strings"
@@ -378,6 +379,7 @@ const (
 	cairo  = "cairo"
 	delhi  = "delhi"
 	oslo   = "oslo" // osloModel's one tree
+	paris  = "paris"
 )
 
 // threeTrees builds a model holding three synthetic supatrees, each with two
@@ -1184,5 +1186,37 @@ func TestErrorDetailClearsPendingPrefix(t *testing.T) {
 	m.Update(key("e"))
 	if m.pending != "" {
 		t.Fatalf("pending = %q after e, want none", m.pending)
+	}
+}
+
+// wrapHanging keeps a help entry's description beside its key while there is
+// room, folds it under the key when there is not, and fits even a pane
+// narrower than its own indent.
+func TestWrapHanging(t *testing.T) {
+	const entry = "  a        new named agent, repo agent on a repo"
+	for _, tc := range []struct {
+		width int
+		first string // the first folded line
+	}{
+		{28, "  a        new named agent,"},
+		{16, "  a"},
+		{4, "a"}, // narrower than the hang: folded flush, words broken
+		{3, "a"},
+	} {
+		out := wrapHanging(entry, tc.width, true)
+		assertFits(t, fmt.Sprintf("width %d", tc.width), out, tc.width)
+		if first, _, _ := strings.Cut(out, "\n"); first != tc.first {
+			t.Errorf("width %d: first line %q, want %q\n%s", tc.width, first, tc.first, out)
+		}
+		// Words may be broken at tiny widths, but none of the text is lost.
+		if got, want := strings.Join(strings.Fields(out), ""), strings.Join(strings.Fields(entry), ""); got != want {
+			t.Errorf("width %d lost text: %q", tc.width, got)
+		}
+	}
+	const detail = "        indented error line that is long"
+	out := wrapHanging(detail, 4, false)
+	assertFits(t, "detail at 4", out, 4)
+	if got, want := strings.Join(strings.Fields(out), ""), strings.Join(strings.Fields(detail), ""); got != want {
+		t.Errorf("a detail line at width 4 lost text: %q", got)
 	}
 }
