@@ -358,7 +358,8 @@ if [ -n "$ENFORCE" ]; then
     ARGS=()
     while IFS= read -r a; do ARGS+=("$a"); done < <(supatree sandbox-args lima)
     PROBE_OUT="$HOME/probe.out"
-    probe() { nono run -s --no-rollback "${ARGS[@]}" -- sh -c "echo x >> '$1'" >"$PROBE_OUT" 2>&1; }
+    # From the tree root, as a real agent starts: its cwd is a granted path.
+    probe() { (cd "$LIMA" && nono run -s --no-rollback "${ARGS[@]}" -- sh -c "echo x >> '$1'") >"$PROBE_OUT" 2>&1; }
     # A probe that should succeed and does not says why, or the failure is a
     # mystery: a nono that refuses to start looks exactly like a denial.
     allowed() { probe "$1" || { echo "nono args: ${ARGS[*]}"; cat "$PROBE_OUT"; fail "$2"; }; }
