@@ -10,7 +10,7 @@ import (
 func TestRequestQueueCatchUp(t *testing.T) {
 	testutil.IsolateHome(t)
 
-	if reqs, _, err := PendingRequests(); err != nil || len(reqs) != 0 {
+	if reqs, _, err := PendingRequests(""); err != nil || len(reqs) != 0 {
 		t.Fatalf("PendingRequests on a fresh install = %v, %v; want none, nil", reqs, err)
 	}
 
@@ -19,7 +19,7 @@ func TestRequestQueueCatchUp(t *testing.T) {
 			t.Fatalf("AppendRequest: %v", err)
 		}
 	}
-	reqs, offset, err := PendingRequests()
+	reqs, offset, err := PendingRequests("")
 	if err != nil {
 		t.Fatalf("PendingRequests: %v", err)
 	}
@@ -29,14 +29,14 @@ func TestRequestQueueCatchUp(t *testing.T) {
 
 	// Reading without committing must return the same backlog: a PM that dies
 	// mid-turn re-reads rather than loses.
-	if again, _, _ := PendingRequests(); len(again) != 2 {
+	if again, _, _ := PendingRequests(""); len(again) != 2 {
 		t.Fatalf("uncommitted re-read returned %d, want 2", len(again))
 	}
 
-	if err := CommitRequests(offset); err != nil {
+	if err := CommitRequests("", offset); err != nil {
 		t.Fatalf("CommitRequests: %v", err)
 	}
-	if after, _, _ := PendingRequests(); len(after) != 0 {
+	if after, _, _ := PendingRequests(""); len(after) != 0 {
 		t.Fatalf("after commit = %+v, want none", after)
 	}
 
@@ -45,11 +45,11 @@ func TestRequestQueueCatchUp(t *testing.T) {
 	if err := AppendRequest(Request{From: "watcher", Text: "third"}); err != nil {
 		t.Fatalf("AppendRequest: %v", err)
 	}
-	reqs, offset, _ = PendingRequests()
+	reqs, offset, _ = PendingRequests("")
 	if len(reqs) != 1 || reqs[0].Text != "third" {
 		t.Fatalf("PendingRequests = %+v, want only the new one", reqs)
 	}
-	if err := CommitRequests(offset); err != nil {
+	if err := CommitRequests("", offset); err != nil {
 		t.Fatalf("CommitRequests: %v", err)
 	}
 }
@@ -64,8 +64,8 @@ func TestRequestQueueSurvivesTruncation(t *testing.T) {
 			t.Fatalf("AppendRequest: %v", err)
 		}
 	}
-	_, offset, _ := PendingRequests()
-	if err := CommitRequests(offset); err != nil {
+	_, offset, _ := PendingRequests("")
+	if err := CommitRequests("", offset); err != nil {
 		t.Fatalf("CommitRequests: %v", err)
 	}
 
@@ -75,7 +75,7 @@ func TestRequestQueueSurvivesTruncation(t *testing.T) {
 	if err := AppendRequest(Request{From: "cli", Text: "after rotation"}); err != nil {
 		t.Fatalf("AppendRequest: %v", err)
 	}
-	reqs, _, err := PendingRequests()
+	reqs, _, err := PendingRequests("")
 	if err != nil {
 		t.Fatalf("PendingRequests: %v", err)
 	}

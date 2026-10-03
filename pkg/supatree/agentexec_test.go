@@ -106,7 +106,7 @@ func TestOpenPMPreflight(t *testing.T) {
 	fakeNono(t, []string{brokenProfile}, nil)
 	cfg := &Config{Models: map[string]config.Model{defaultModelKey: {NonoProfile: brokenProfile, Binary: defaultModelKey}}}
 	ws := zellij.Workspace{LayoutsDir: LayoutsDir()}
-	_, err := OpenPM(cfg, ws, "20%")
+	_, err := OpenPM(cfg, ws, "20%", "")
 	if err == nil || !strings.Contains(err.Error(), "undo") {
 		t.Fatalf("err = %v, want nono's complaint", err)
 	}

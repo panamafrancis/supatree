@@ -37,6 +37,8 @@ const (
 	modeNewTreeName // naming the supatree
 	modeConfirmDelete
 	modeConfirmQuit
+	modeNewPM // naming a new PM (a on the PM section)
+	modeConfirmDeletePM
 	modeHelp         // showing the keybinding reference
 	modeNewStackName // naming a new stack (S)
 )
@@ -49,23 +51,24 @@ const (
 	rowRepos // the "repositories" section header — selectable and foldable
 	rowAgent
 	rowMember
-	rowPM      // the PM agent, pinned above every supatree
-	rowDivider // the rule separating the PM section from the supatrees
+	rowPM       // one PM agent; the section sits above every supatree
+	rowDivider  // the rule separating the PM section from the supatrees
+	rowPMHeader // the "Product Managers" heading
 )
 
 // selectable reports whether the cursor may rest on a row of this kind. The
 // headings and the divider are decoration; everything else is something enter
 // acts on.
 func (k rowKind) selectable() bool {
-	return k != rowSubheader && k != rowDivider
+	return k != rowSubheader && k != rowDivider && k != rowPMHeader
 }
 
-// pmLabel is the PM row's text and its row identity for selectRow.
-const pmLabel = "PM"
+// pmHeaderLabel heads the PM section.
+const pmHeaderLabel = "Product Managers"
 
 // pmSectionRows is how many rows the PM section occupies above the first
-// supatree (the PM row and its divider).
-const pmSectionRows = 2
+// supatree with the single default PM (its heading, the PM row, the divider).
+const pmSectionRows = 3
 
 // reposLabel is the text of the repositories section header. It is also the row
 // identity setReposCollapse re-selects on, so the two must agree.
@@ -104,7 +107,9 @@ type Model struct {
 	stackCursor int             // cursor within the modeNewTree stack picker
 	activeTree  string          // supatree whose Zellij tab this sidebar belongs to ("you are here")
 	attention   map[string]bool // supatrees with an event you have not looked at yet
-	pmPending   int             // requests queued for the PM that it has not read yet
+	pms         []supatree.PM   // the PMs, top first
+	pmPending   map[string]int  // per PM: requests queued for it that it has not read yet
+	actionPM    string          // PM targeted by the active input mode
 	fetching    bool            // a PR fetch is in flight
 	ghAvailable bool            // gh usable; false after a permanent error suppresses tick fetches
 	prHint      string          // persistent PR-fetch hint (e.g. "gh rate limited")
@@ -128,6 +133,7 @@ func New(stCfg *supatree.Config, ws zellij.Workspace) *Model {
 		isSidebar:   os.Getenv("SUPATREE_SIDEBAR") == "1",
 		activeTree:  treeFromTab(os.Getenv("SUPATREE_ACTIVE_TREE")),
 		attention:   map[string]bool{},
+		pmPending:   map[string]int{},
 		input:       textinput.New(),
 	}
 	m.reload()
@@ -137,6 +143,13 @@ func New(stCfg *supatree.Config, ws zellij.Workspace) *Model {
 func (m *Model) reload() {
 	insts, _ := supatree.List(m.stCfg)
 	m.insts = insts
+	// The section is never empty: an unreadable registry still shows the
+	// default PM, which is what opening one would migrate it to anyway.
+	if pms, err := supatree.LoadPMs(); err == nil && len(pms) > 0 {
+		m.pms = pms
+	} else if len(m.pms) == 0 {
+		m.pms = []supatree.PM{{Name: supatree.DefaultPMName}}
+	}
 	// Fold state lives on disk so every tab's sidebar shows the same shape; a
 	// reload is exactly when a fold made in another tab should appear here.
 	m.ui = supatree.LoadUIState()
@@ -315,10 +328,14 @@ func treeFromTab(tab string) string {
 }
 
 func (m *Model) rebuildRows() {
-	// The PM comes first and is always there, even with no supatrees: it is the
-	// one agent that is not inside any of them, so it gets a section of its own
-	// rather than being mistaken for one more tree.
-	rows := []row{{kind: rowPM, label: pmLabel}, {kind: rowDivider}}
+	// The PMs come first and are always there, even with no supatrees: they are
+	// the agents that are not inside any of them, so they get a section of their
+	// own rather than being mistaken for more trees.
+	rows := []row{{kind: rowPMHeader, label: pmHeaderLabel}}
+	for _, p := range m.pms {
+		rows = append(rows, row{kind: rowPM, label: p.Name})
+	}
+	rows = append(rows, row{kind: rowDivider})
 	for _, inst := range m.insts {
 		rows = append(rows, row{kind: rowTree, tree: inst.Name, label: inst.Name})
 		if m.ui.TreeCollapsed(inst.Name) {
@@ -361,7 +378,7 @@ func (m *Model) Init() tea.Cmd {
 	// loop, so forcing here would re-hit the gh API for every member on every
 	// restart and exhaust the rate limit.
 	return tea.Batch(m.tickCmd(), m.refreshDirtyCmd(), m.refreshRunningCmd(),
-		m.refreshAttentionCmd(), m.refreshPMPendingCmd(), m.fetchPRCmd(false))
+		m.refreshAttentionCmd(), m.refreshPMPendingCmd(), m.fetchPRCmd(false), m.coldStartCmd())
 }
 
 func (m *Model) clampCursor() {
@@ -380,6 +397,11 @@ func (m *Model) clampCursor() {
 			m.cursor--
 		}
 	}
+}
+
+// pm returns the PM named name, or nil.
+func (m *Model) pm(name string) *supatree.PM {
+	return supatree.FindPM(m.pms, name)
 }
 
 func (m *Model) selected() *row {
@@ -406,7 +428,7 @@ func (m *Model) tickCmd() tea.Cmd {
 type tickMsg struct{}
 type dirtyMsg struct{ dirty map[string]bool }
 type attentionMsg struct{ attention map[string]bool }
-type pmPendingMsg struct{ n int }
+type pmPendingMsg struct{ n map[string]int }
 type runningMsg struct{ tabs map[string]bool }
 type prMsg struct {
 	err error

@@ -50,6 +50,7 @@ var startCmd = &cobra.Command{
 			return err
 		}
 		if startBackground {
+			markColdStart(sessionName)
 			return zellij.CreateBackgroundSession(sessionName, layoutPath)
 		}
 
@@ -68,11 +69,25 @@ var startCmd = &cobra.Command{
 					_ = zellij.DeleteSession(sessionName)
 					break
 				}
+				// A marker left by a cold start whose sidebar never ran would
+				// otherwise be taken by the next sidebar to restart here.
+				supatree.TakeColdStart(sessionName)
 				return execZellij("attach", sessionName)
 			}
 		}
+		markColdStart(sessionName)
 		return execZellij("--session", sessionName, "--new-session-with-layout", layoutPath)
 	},
+}
+
+// markColdStart asks the new session's first sidebar to open the top PM, so a
+// cold start lands in a PM. Only a session being created is marked: attaching
+// to a running one keeps the focus where it was left. Best effort — a missing
+// marker costs the PM tab, never the session.
+func markColdStart(sessionName string) {
+	if err := supatree.MarkColdStart(sessionName); err != nil {
+		fmt.Fprintf(os.Stderr, "warning: will not open the PM on start: %v\n", err)
+	}
 }
 
 // spawnWatcher starts `supatree watch` detached, so it survives this process

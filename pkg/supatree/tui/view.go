@@ -89,8 +89,10 @@ func (m *Model) viewport(avail int) (int, int) {
 
 func (m *Model) renderRow(r row, selected bool) string {
 	switch r.kind {
+	case rowPMHeader:
+		return "  " + styleSub.Render(r.label)
 	case rowPM:
-		return m.renderPM(selected)
+		return m.renderPM(r.label, selected)
 	case rowDivider:
 		return styleMuted.Render(strings.Repeat("─", m.dividerWidth()))
 	case rowTree:
@@ -155,20 +157,20 @@ func (m *Model) renderRow(r row, selected bool) string {
 	return ""
 }
 
-// renderPM draws the PM row. It is styled apart from the supatrees on purpose —
-// a filled glyph and its own colour instead of a fold arrow — because it is not
-// a tree and nothing folds under it.
-func (m *Model) renderPM(selected bool) string {
-	line := stylePM.Render("◆ " + pmLabel)
-	if m.openTabs[supatree.PMTab] {
+// renderPM draws a PM row. It is styled apart from the supatrees on purpose —
+// a filled glyph and its own colour instead of a fold arrow — because a PM is
+// not a tree and nothing folds under it.
+func (m *Model) renderPM(name string, selected bool) string {
+	line := stylePM.Render("◆ " + name)
+	if p := m.pm(name); p != nil && m.openTabs[p.Tab()] {
 		line += styleRunning.Render(" ●")
 	}
-	if m.pmPending > 0 {
-		// Requests the PM has not read yet: queued with m, by the watcher, the
+	if n := m.pmPending[name]; n > 0 {
+		// Requests this PM has not read yet: queued with m, by the watcher, the
 		// scheduler or `supatree request`.
-		line += styleDirty.Render(fmt.Sprintf("  ✉%d", m.pmPending))
+		line += styleDirty.Render(fmt.Sprintf("  ✉%d", n))
 	}
-	return "  " + sel(selected, line)
+	return "    " + sel(selected, line)
 }
 
 // dividerWidth is the PM section's rule: the pane width once it is known, and a
@@ -277,6 +279,14 @@ func (m *Model) footer() string {
 		return prompt
 	case modeConfirmDelete:
 		return styleDirty.Render(fmt.Sprintf("delete %q? [y/N]", m.actionTree))
+	case modeNewPM:
+		prompt := "new PM — name: " + m.input.View()
+		if m.inputErr != nil {
+			prompt += "\n" + styleDirty.Render(wrapText(m.inputErr.Error(), m.width))
+		}
+		return prompt
+	case modeConfirmDeletePM:
+		return styleDirty.Render(fmt.Sprintf("remove PM %q? [y/N]", m.actionPM))
 	case modeConfirmQuit:
 		return styleDirty.Render("quit sidebar? [y/N]")
 	case modeHelp:
@@ -295,7 +305,7 @@ func (m *Model) footer() string {
 			openHint = "enter shell"
 		case rowPM:
 			openHint = "enter PM"
-		case rowTree, rowSubheader, rowRepos, rowAgent, rowDivider:
+		case rowTree, rowSubheader, rowRepos, rowAgent, rowDivider, rowPMHeader:
 		}
 	}
 	// The motions moved into `?` — the footer keeps the actions, which are the
@@ -420,12 +430,17 @@ func helpView() string {
 		styleHeader.Render("Open"),
 		"  enter/o  agent, or shell",
 		"           on a repo row,",
-		"           PM on the PM row",
+		"           PM on a PM row",
 		"  a        new named agent,",
 		"           repo agent on a repo",
 		"  D        dashboard",
-		"  P        PM agent",
-		"  m        hand this row to the PM",
+		"  P        top PM",
+		"  m        hand this row to the",
+		"           top PM",
+		"",
+		styleHeader.Render("Product Managers"),
+		"  a        new PM",
+		"  d        remove PM",
 		"",
 		styleHeader.Render("Supatrees"),
 		"  n        new supatree",

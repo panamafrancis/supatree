@@ -60,7 +60,10 @@ func TestPMGrantsNoDuplicateStack(t *testing.T) {
 }
 
 func TestPMEnvGatesPMToolsOnly(t *testing.T) {
-	env := PMEnv()
+	env := PMEnv(PM{Name: "research"})
+	if env["SUPATREE_PM_NAME"] != "research" || env["SUPATREE_AGENT"] != "pm-research" {
+		t.Errorf("env = %v, want the PM's name and agent name", env)
+	}
 	if env["SUPATREE_PM"] != "1" {
 		t.Error("SUPATREE_PM not set — the cross-tree tools would be gated off")
 	}

@@ -945,20 +945,21 @@ func handleMessageAgent(args map[string]any) (string, bool) {
 	if from == "" {
 		from = "unknown"
 	}
-	// The PM is in no tree's agents.yml. Its mail lands in this tree's mailbox
-	// — the only one a sandboxed tree agent can write — and the watcher
-	// forwards it into the PM's request queue.
-	if to == PMAgentName && os.Getenv("SUPATREE_PM") != "1" {
-		if err := Deliver(inst.Root, to, from, text); err != nil {
-			return err.Error(), true
-		}
-		return "left for the PM; the watcher forwards it into the PM's request queue within a few seconds.", false
-	}
 	agents, err := LoadAgents(inst.Root)
 	if err != nil {
 		return err.Error(), true
 	}
 	target := FindAgent(agents, to)
+	// PMs are in no tree's agents.yml. Their mail lands in this tree's mailbox
+	// — the only one a sandboxed tree agent can write — and the watcher
+	// forwards it into the request queue, addressed to that PM: "pm" is the
+	// top PM, "pm-<name>" a particular one.
+	if target == nil && IsPMAgentID(to) && os.Getenv("SUPATREE_PM") != "1" {
+		if err := Deliver(inst.Root, to, from, text); err != nil {
+			return err.Error(), true
+		}
+		return "left for the PM; the watcher forwards it into the PM's request queue within a few seconds.", false
+	}
 	if target == nil {
 		return fmt.Sprintf("no agent named %q in supatree %q — call `agents` to see them, or `start_agent` to launch one", to, inst.Name), true
 	}
@@ -1039,14 +1040,15 @@ var dualTools = map[string]bool{
 
 func handleRequests(args map[string]any) (string, bool) {
 	peek, _ := args["peek"].(bool)
-	reqs, offset, err := PendingRequests()
+	pm := CurrentPMName()
+	reqs, offset, err := PendingRequests(pm)
 	if err != nil {
 		return err.Error(), true
 	}
 	if !peek && len(reqs) > 0 {
 		// Commit only after reading them out: a PM that dies mid-turn should
 		// re-read the backlog rather than lose it.
-		if err := CommitRequests(offset); err != nil {
+		if err := CommitRequests(pm, offset); err != nil {
 			return err.Error(), true
 		}
 	}
@@ -1316,16 +1318,16 @@ func startAgent(inst *Instance, agent, brief string) (string, error) {
 		return "", err
 	}
 	if strings.TrimSpace(brief) == "" && inst.Reviewing() {
-		brief = DefaultReviewBrief(inst)
+		brief = DefaultReviewBrief(inst, currentPMAgentID())
 	}
 	if strings.TrimSpace(brief) != "" {
-		if err := Deliver(inst.Root, agent, PMAgentName, brief); err != nil {
+		if err := Deliver(inst.Root, agent, currentPMAgentID(), brief); err != nil {
 			return "", fmt.Errorf("brief the agent: %w", err)
 		}
 	} else if !HasMail(inst.Root, agent) {
 		return "", fmt.Errorf("nothing for %s to do: pass a brief", agent)
 	}
-	req := LaunchRequest{Tree: inst.Name, Agent: agent, Session: os.Getenv("ZELLIJ_SESSION_NAME"), From: PMAgentName}
+	req := LaunchRequest{Tree: inst.Name, Agent: agent, Session: os.Getenv("ZELLIJ_SESSION_NAME"), From: currentPMAgentID()}
 	if err := QueueLaunch(req); err != nil {
 		return "", fmt.Errorf("queue launch: %w", err)
 	}

@@ -86,6 +86,15 @@ const pmAgentsMD = `# Supatree PM
 
 You coordinate supatrees. You do not write code in them.
 
+## Which PM you are
+
+There may be several PMs, all sharing this directory. ` + "`SUPATREE_PM_NAME`" + ` is
+your name. ` + "`requests`" + ` gives you only what is yours: requests addressed to you, and
+— if you are the top PM — everything addressed to no PM in particular. Tree
+agents reach you as ` + "`pm-<your name>`" + ` (the top PM also as ` + "`pm`" + `), so sign
+nothing else. Another PM is a peer, not a subordinate: do not act on what was
+routed to it.
+
 ## Every turn, before anything else
 
 1. Call ` + "`requests`" + ` and act on what is queued. Nothing interrupts you to say
@@ -201,24 +210,53 @@ func ScaffoldPM() error {
 	return nil
 }
 
-// PMEnv is the environment injected into the PM's pane. SUPATREE_PM gates the
-// cross-tree MCP tools; SUPATREE is deliberately *not* set, because the PM is
-// in no supatree and the tree-scoped tools would resolve nothing.
-func PMEnv() map[string]string {
+// PMEnv is the environment injected into a PM's pane. SUPATREE_PM gates the
+// cross-tree MCP tools and SUPATREE_PM_NAME says which PM this is; SUPATREE is
+// deliberately *not* set, because a PM is in no supatree and the tree-scoped
+// tools would resolve nothing.
+func PMEnv(p PM) map[string]string {
 	return map[string]string{
-		"SUPATREE_PM":    "1",
-		"SUPATREE_AGENT": "pm",
+		"SUPATREE_PM":      "1",
+		"SUPATREE_PM_NAME": p.Name,
+		"SUPATREE_AGENT":   p.AgentID(),
 	}
 }
 
-// OpenPM opens or focuses the PM tab.
-func OpenPM(cfg *Config, ws zellij.Workspace, sidebarWidth string) (bool, error) {
+// CurrentPMName is the PM this process runs as, or "" (the top PM) for a PM
+// launched before PMs were plural.
+func CurrentPMName() string {
+	return os.Getenv("SUPATREE_PM_NAME")
+}
+
+// currentPMAgentID is what this PM signs its mail with: the agent name a reply
+// has to be addressed to for the watcher to forward it back to this PM.
+func currentPMAgentID() string {
+	if name := CurrentPMName(); name != "" {
+		return PM{Name: name}.AgentID()
+	}
+	return PMAgentName
+}
+
+// OpenPM opens or focuses the named PM's tab; an empty name is the top PM.
+func OpenPM(cfg *Config, ws zellij.Workspace, sidebarWidth, name string) (bool, error) {
 	// nono refuses a grant on a path that does not exist.
 	if err := EnsureLayout(); err != nil {
 		return false, err
 	}
 	if err := ScaffoldPM(); err != nil {
 		return false, err
+	}
+	pms, err := LoadPMs()
+	if err != nil {
+		return false, err
+	}
+	pm := pms[0]
+	if name != "" {
+		p := FindPM(pms, name)
+		if p == nil {
+			return false, fmt.Errorf("no PM named %q", name)
+		}
+		pm = *p
 	}
 	insts, err := List(cfg)
 	if err != nil {
@@ -229,16 +267,28 @@ func OpenPM(cfg *Config, ws zellij.Workspace, sidebarWidth string) (bool, error)
 		// refuse to open.
 		_ = err
 	}
-	model, err := cfg.Model(cfg.PMModel())
+	model, err := cfg.Model(pm.ModelKey(cfg))
 	if err != nil {
 		return false, err
 	}
 	if err := NonoPreflight(model.NonoProfile); err != nil {
-		return false, fmt.Errorf("PM: %w", err)
+		return false, fmt.Errorf("PM %s: %w", pm.Name, err)
 	}
-	nonoArgs, err := sandbox.BuildGrantedNonoArgs(model, PMGrants(cfg, insts), PMDir(), PMAddress, true)
-	if err != nil {
-		return false, err
+	// Every PM shares one directory, so a directory-scoped --continue would
+	// resume whichever ran last. Each resumes its own session instead; a model
+	// with no session flags can only ever resume one, and that is the top PM.
+	sid := pm.SessionID
+	var resume bool
+	if sandbox.SupportsSessions(model) {
+		resume = sandbox.SessionExists(PMDir(), sid)
+	} else {
+		sid = ""
+		resume = pm.Name == pms[0].Name
 	}
-	return ws.OpenOrFocusTab(PMTab, PMDir(), sidebarWidth, nonoArgs, withAgentExec(PMEnv()))
+	grants := PMGrants(cfg, insts)
+	if grants.Empty() {
+		return false, fmt.Errorf("refusing to build a sandbox with no filesystem grants")
+	}
+	nonoArgs := sandbox.BuildGrantedAgentNonoArgs(model, grants, PMDir(), sid, pm.Address(), resume)
+	return ws.OpenOrFocusTab(pm.Tab(), PMDir(), sidebarWidth, nonoArgs, withAgentExec(PMEnv(pm)))
 }
