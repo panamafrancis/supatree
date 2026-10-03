@@ -1,0 +1,19 @@
+supatree
+  Product Managers
+    ◆ pm
+────────────────────────────
+  WIP
+  ▼ berlin
+    agents
+      ○ main
+    ▶ repositories  ·2
+  ▼ paris
+    agents
+      ○ main
+      ○ reviewer
+    ▶ repositories  ·2
+
+enter PM · space fold      
+a agent · p PM · n new     
+s sync · d del · D dash    
+r refresh · ? help · q quit

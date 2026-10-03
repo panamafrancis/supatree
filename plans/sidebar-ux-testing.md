@@ -250,11 +250,39 @@ teatest version), **new** not covered.
 | 47 | `supatree start` cold: session created, sidebar draws once input arrives | H, E | new |
 | 48 | The sidebar survives zellij being slow or unavailable (circuit open): no hang, a hint | T | new |
 
+## Harness notes (from step 1)
+
+The harness is in `pkg/supatree/tui/harness_test.go`; the tests are in
+`sidebar_teatest_test.go`.
+
+- **Golden files hold the final model's `View()`, not teatest's
+  `FinalOutput`.** The output stream is every frame with its cursor movement.
+  It is right for "wait until X has appeared" (`waitFor`), and wrong for a
+  golden file.
+- **A test must not end with a command in flight.** A leftover command keeps
+  calling zellij after the test's PATH is restored, so it reaches the real
+  zellij, which fails. Three failures open the zellij package's process-wide
+  circuit breaker, and then every zellij call is skipped for 60 seconds, in
+  whichever tests run next. Leftover commands also write into temp dirs that
+  are being deleted.
+
+  `trackedModel` wraps the sidebar and tracks each command until `Update` has
+  handled its result. `finish()` and the test cleanup wait for it to settle.
+  The 30-second tick is told apart by age (over 250ms), since it only sleeps.
+- **`finish()` settles before quitting,** so the final screen never depends on
+  how fast a fake answered.
+- **Your shell's `CLAUDE_CONFIG_DIR` is moved into the sandbox.** Opening an
+  agent touches Claude's config.
+- **Run under `-race` as well.** The tracker is shared between the program's
+  goroutines.
+
 ## Order of work
 
-1. teatest dependency, `TestMain` colour profile, `fakeBin`, and the zellij and
-   gh fakes. Port one existing test (help) to prove the harness.
-2. Shared fixture builder matching `ux-env.sh`'s trees. Golden for scenario 1.
+1. ~~teatest dependency, `TestMain` colour profile, `fakeBin`, and the zellij
+   and gh fakes. Port one existing test (help) to prove the harness.~~ Done,
+   with scenario 17 (enter opens an agent's tab).
+2. ~~Shared fixture builder matching `ux-env.sh`'s trees. Golden for scenario
+   1.~~ Done (berlin and paris; oslo and the extra PM still to add).
 3. The **new** agent and PM scenarios (17–19, 21, 23, 25–26, 29). These are
    where the bugs were.
 4. Width goldens (2, 3, 5, 41), then the rest by section.
