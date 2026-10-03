@@ -121,9 +121,11 @@ type Model struct {
 	creating    []string        // supatrees being created by this sidebar, shown until they land
 	helpScroll  int             // first line of the `?` panel in view
 	detail      string          // full error text the `?` panel shows instead of the reference (opened by `e`)
-	fetching    bool            // a PR fetch is in flight
-	ghAvailable bool            // gh usable; false after a permanent error suppresses tick fetches
-	prHint      string          // persistent PR-fetch hint (e.g. "gh rate limited")
+	panel       []string        // the `?` panel folded to the pane, for panelKey
+	panelKey    panelKey
+	fetching    bool   // a PR fetch is in flight
+	ghAvailable bool   // gh usable; false after a permanent error suppresses tick fetches
+	prHint      string // persistent PR-fetch hint (e.g. "gh rate limited")
 	msg         string
 	err         error
 }

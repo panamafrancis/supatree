@@ -290,18 +290,23 @@ func OpenPM(cfg *Config, ws zellij.Workspace, sidebarWidth, name string) (bool, 
 		return false, fmt.Errorf("refusing to build a sandbox with no filesystem grants")
 	}
 	nonoArgs := sandbox.BuildGrantedAgentNonoArgs(model, grants, PMDir(), sid, pm.Address(), resume)
-	return ws.OpenOrFocusTab(pm.Tab(), PMDir(), sidebarWidth, nonoArgs, withAgentExec(PMEnv(pm)))
+	return launch(ws.OpenOrFocusTab(pm.Tab(), PMDir(), sidebarWidth, nonoArgs, withAgentExec(PMEnv(pm))))
 }
 
 // NewPM registers a PM and, when open is set, opens it. A PM whose open fails
-// is dropped again: left registered, it would be listed as if it were running.
-// Outside zellij there is nowhere to open it, so callers there only register.
+// before its tab is opened is dropped again: left registered, it would be
+// listed as if it were running. One that failed opening the tab may be running
+// all the same, and stays. Outside zellij there is nowhere to open it, so
+// callers there only register.
 func NewPM(cfg *Config, ws zellij.Workspace, sidebarWidth, name, model string, open bool) (PM, error) {
 	p, err := AddPM(name, model)
 	if err != nil || !open {
 		return p, err
 	}
 	if _, err := OpenPM(cfg, ws, sidebarWidth, p.Name); err != nil {
+		if LaunchUncertain(err) {
+			return p, err
+		}
 		if _, rmErr := RemovePM(p.Name); rmErr != nil {
 			return PM{}, fmt.Errorf("%w (and PM %s is still registered: %w)", err, p.Name, rmErr)
 		}

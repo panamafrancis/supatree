@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"regexp"
 	"strings"
+	"unicode/utf8"
 
 	"github.com/charmbracelet/lipgloss"
 
@@ -303,7 +304,7 @@ func (m *Model) footer() string {
 		// screenful in a pane this narrow, and would bury the list and the
 		// keys. `e` opens all of it.
 		return stylePRClosed.Render(errSummary(m.err, m.width)) + "\n" +
-			styleStatus.Render(wrapParts([]string{"e full error", "any key hides"}, " · ", m.width))
+			styleStatus.Render(wrapText("e full error", m.width))
 	}
 	// Enter is contextual (a member row is a place, an agent row is a process),
 	// so the hint says which one the cursor is on rather than a generic "open".
@@ -343,8 +344,15 @@ func errSummary(err error, width int) string {
 	if len(lines) > errSummaryLines {
 		lines = lines[:errSummaryLines]
 		last := lines[errSummaryLines-1]
-		if i := strings.LastIndex(last, " "); width > 0 && lipgloss.Width(last+" …") > width && i > 0 {
-			last = last[:i]
+		if width > 0 && lipgloss.Width(last+" …") > width {
+			if i := strings.LastIndex(last, " "); i > 0 {
+				last = last[:i]
+			}
+			// A piece of a broken word has no space to cut back to.
+			for last != "" && lipgloss.Width(last+" …") > width {
+				_, size := utf8.DecodeLastRuneInString(last)
+				last = last[:len(last)-size]
+			}
 		}
 		lines[errSummaryLines-1] = last + " …"
 	}
@@ -398,15 +406,19 @@ func breakWord(w string, width int) []string {
 		return []string{w}
 	}
 	var pieces []string
-	cur := ""
+	var cur strings.Builder
+	curW := 0
 	for _, r := range w {
-		if cur != "" && lipgloss.Width(cur+string(r)) > width {
-			pieces = append(pieces, cur)
-			cur = ""
+		rw := lipgloss.Width(string(r))
+		if curW > 0 && curW+rw > width {
+			pieces = append(pieces, cur.String())
+			cur.Reset()
+			curW = 0
 		}
-		cur += string(r)
+		cur.WriteRune(r)
+		curW += rw
 	}
-	return append(pieces, cur)
+	return append(pieces, cur.String())
 }
 
 // keyColumn matches a help line up to where its description starts: the
@@ -414,15 +426,14 @@ func breakWord(w string, width int) []string {
 var keyColumn = regexp.MustCompile(`^(\s*\S.*?\s{2,})\S`)
 
 // wrapHanging folds one line of the `?` panel to the pane width, indenting
-// continuation lines to where the description started so the key column stays
-// clear. A line with no key column (a continuation, or a line of an error)
-// keeps its own indent.
-func wrapHanging(s string, width int) string {
+// continuation lines under the line's own indent — or, for a help entry
+// (keyed), under where its description starts, so the key column stays clear.
+func wrapHanging(s string, width int, keyed bool) string {
 	if width <= 0 || lipgloss.Width(s) <= width {
 		return s
 	}
 	prefix := s[:len(s)-len(strings.TrimLeft(s, " "))]
-	if loc := keyColumn.FindStringSubmatchIndex(s); loc != nil {
+	if loc := keyColumn.FindStringSubmatchIndex(s); keyed && loc != nil {
 		prefix = s[:loc[3]]
 	}
 	pad := lipgloss.Width(prefix)
@@ -512,16 +523,29 @@ func (m *Model) helpView() string {
 
 // panelLines is what the `?` panel shows, folded to the pane width: the full
 // text of the error `e` opened, else the keybinding reference.
+// Folding is cached per width and text, since View renders on every tick.
 func (m *Model) panelLines() []string {
-	src := helpLines()
+	key := panelKey{width: m.width, detail: m.detail}
+	if m.panel != nil && m.panelKey == key {
+		return m.panel
+	}
+	keyed, src := true, helpLines()
 	if m.detail != "" {
-		src = strings.Split(m.detail, "\n")
+		// A tab would be measured as nothing and drawn as up to eight columns.
+		keyed, src = false, strings.Split(strings.ReplaceAll(m.detail, "\t", "    "), "\n")
 	}
 	lines := make([]string, 0, len(src))
 	for _, l := range src {
-		lines = append(lines, strings.Split(wrapHanging(l, m.width), "\n")...)
+		lines = append(lines, strings.Split(wrapHanging(l, m.width, keyed), "\n")...)
 	}
+	m.panel, m.panelKey = lines, key
 	return lines
+}
+
+// panelKey is what the folded `?` panel depends on.
+type panelKey struct {
+	width  int
+	detail string
 }
 
 // helpLines is the `?` reference: a key column and a description per entry,
@@ -562,7 +586,7 @@ func helpLines() []string {
 		"",
 		styleHeader.Render("Global"),
 		"  r        refresh",
-		"  e        full text of the last error",
+		"  e        full text of the error the footer is showing",
 		"  ?        this help",
 		"  q        quit",
 		"",

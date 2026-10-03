@@ -1,6 +1,7 @@
 package supatree
 
 import (
+	"errors"
 	"fmt"
 	"io"
 	"time"
@@ -47,7 +48,7 @@ func OpenRootAgent(inst *Instance, c *Config, ws zellij.Workspace, sidebarWidth,
 	// listed as if it were running. A record made earlier — start_agent
 	// registers an agent before the watcher launches it — is not ours to drop.
 	defer func() {
-		if created && err != nil {
+		if created && err != nil && !LaunchUncertain(err) {
 			_, _ = forgetAgent(inst.Root, agentName)
 		}
 	}()
@@ -77,7 +78,30 @@ func OpenRootAgent(inst *Instance, c *Config, ws zellij.Workspace, sidebarWidth,
 		nonoArgs = sandbox.AppendPrompt(nonoArgs, model, KickoffPrompt)
 	}
 	env := withAgentExec(inst.AgentEnv(agentName))
-	return ws.OpenOrFocusTab(TabName(inst.Name, agentName), inst.Root, sidebarWidth, nonoArgs, env)
+	return launch(ws.OpenOrFocusTab(TabName(inst.Name, agentName), inst.Root, sidebarWidth, nonoArgs, env))
+}
+
+// LaunchError is a failure in opening an agent's tab. Zellij may have opened
+// it anyway — a command that timed out after doing its work — so the agent may
+// be running, and its record must not be taken back.
+type LaunchError struct{ Err error }
+
+func (e *LaunchError) Error() string { return e.Err.Error() }
+func (e *LaunchError) Unwrap() error { return e.Err }
+
+// LaunchUncertain reports whether err came from opening the tab, after which
+// the agent may or may not be running.
+func LaunchUncertain(err error) bool {
+	var le *LaunchError
+	return errors.As(err, &le)
+}
+
+// launch passes OpenOrFocusTab's result on, marking a failure as a LaunchError.
+func launch(opened bool, err error) (bool, error) {
+	if err != nil {
+		return opened, &LaunchError{Err: err}
+	}
+	return opened, nil
 }
 
 // requireMember resolves a member alias to a worktree that actually exists on

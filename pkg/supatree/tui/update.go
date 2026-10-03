@@ -2,6 +2,7 @@ package tui
 
 import (
 	"fmt"
+	"math"
 	"os"
 	"slices"
 	"strings"
@@ -141,7 +142,7 @@ func (m *Model) updateHelp(msg tea.KeyMsg) {
 	case "g":
 		m.helpScroll = 0
 	case "G":
-		m.helpScroll = len(m.panelLines())
+		m.helpScroll = math.MaxInt // helpView clamps it to the last screenful
 	default:
 		m.mode = modeNormal
 		m.helpScroll = 0
@@ -159,7 +160,9 @@ func (m *Model) updateNormal(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	m.err = nil
 	m.msg = ""
 	if msg.String() == "e" && lastErr != nil {
-		// The footer shows only an error's first line; this is the rest.
+		// The footer shows only an error's first line; this is the rest. It
+		// ends any half-typed sequence, as every other key does.
+		m.pending = ""
 		m.detail = lastErr.Error()
 		m.mode = modeHelp
 		return m, nil

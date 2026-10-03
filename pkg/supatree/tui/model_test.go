@@ -1147,3 +1147,42 @@ if nono was upgraded, check: nono outdated`)
 		t.Error("? after an error detail should show the reference again")
 	}
 }
+
+// The awkward errors: a long path that has to be broken mid-word (and then cut
+// short), a tab, and a double space that is not a help entry's key column.
+func TestErrorTextEdgeCases(t *testing.T) {
+	const width = 20
+	m := osloModel(t)
+	m.width = width
+
+	m.err = errors.New("open /Users/someone/supatree/trees/some-very-long-tree-name/repos/api/.git/config: no such file")
+	assertFits(t, "broken-word summary", m.footer(), width)
+	if !strings.Contains(m.footer(), "…") {
+		t.Errorf("a cut summary should say so:\n%s", m.footer())
+	}
+
+	m.err = errors.New("failed:\n\tindented by a tab, long enough to fold\nprofile  not found because the file is missing")
+	m.Update(key("e"))
+	out := strings.Join(m.panelLines(), "\n")
+	assertFits(t, "error detail", out, width)
+	if strings.Contains(out, "\t") {
+		t.Errorf("a tab reached the screen:\n%s", out)
+	}
+	for _, line := range m.panelLines() {
+		if strings.HasPrefix(line, strings.Repeat(" ", 9)) {
+			t.Errorf("a double space was taken for a key column: %q\n%s", line, out)
+		}
+	}
+}
+
+// e ends a half-typed two-key sequence like any other key, so closing the
+// detail does not leave a g waiting to make the next g a jump to the top.
+func TestErrorDetailClearsPendingPrefix(t *testing.T) {
+	m := osloModel(t)
+	m.Update(key("g"))
+	m.err = errors.New("boom")
+	m.Update(key("e"))
+	if m.pending != "" {
+		t.Fatalf("pending = %q after e, want none", m.pending)
+	}
+}

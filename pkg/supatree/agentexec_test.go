@@ -145,6 +145,30 @@ func TestFailedOpenLeavesNoRecord(t *testing.T) {
 		t.Fatal("a failed open dropped an agent registered before it")
 	}
 
+	// A failure opening the tab is not a refused launch: zellij may have opened
+	// it all the same, and the agent may be running.
+	t.Run("tab open failed", func(t *testing.T) {
+		fakeNono(t, nil, nil)
+		bin := t.TempDir()
+		if err := os.WriteFile(filepath.Join(bin, "zellij"), []byte("#!/bin/sh\nexit 1\n"), 0755); err != nil {
+			t.Fatal(err)
+		}
+		t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
+		_, err := OpenRootAgent(inst, cfg, ws, "20%", "slow", "", nil)
+		if !LaunchUncertain(err) {
+			t.Fatalf("err = %v, want a LaunchError", err)
+		}
+		if agents, _ := LoadAgents(inst.Root); FindAgent(agents, "slow") == nil {
+			t.Fatal("a failed tab open dropped the record of an agent that may be running")
+		}
+		if _, err := NewPM(cfg, ws, "20%", "slowpm", "", true); !LaunchUncertain(err) {
+			t.Fatalf("NewPM err = %v, want a LaunchError", err)
+		}
+		if pms, _ := LoadPMs(); FindPM(pms, "slowpm") == nil {
+			t.Fatal("a failed tab open dropped a PM that may be running")
+		}
+	})
+
 	if _, err := NewPM(cfg, ws, "20%", "infra", "", true); err == nil || !strings.Contains(err.Error(), "undo") {
 		t.Fatalf("NewPM err = %v, want nono's complaint", err)
 	}
