@@ -354,9 +354,13 @@ if [ -n "$ENFORCE" ]; then
     LIMA="$HOME/supatree/trees/lima"
     ARGS=()
     while IFS= read -r a; do ARGS+=("$a"); done < <(supatree sandbox-args lima)
-    probe() { nono run -s --no-rollback "${ARGS[@]}" -- sh -c "echo x >> '$1'" >/dev/null 2>&1; }
-    probe "$LIMA/repos/keystone/probe"     || fail "agent cannot write its own member"
-    probe "$ST_STATE/trees/lima/probe"     || fail "agent cannot write its own tree state"
+    PROBE_OUT="$HOME/probe.out"
+    probe() { nono run -s --no-rollback "${ARGS[@]}" -- sh -c "echo x >> '$1'" >"$PROBE_OUT" 2>&1; }
+    # A probe that should succeed and does not says why, or the failure is a
+    # mystery: a nono that refuses to start looks exactly like a denial.
+    allowed() { probe "$1" || { echo "nono args: ${ARGS[*]}"; cat "$PROBE_OUT"; fail "$2"; }; }
+    allowed "$LIMA/repos/keystone/probe"   "agent cannot write its own member"
+    allowed "$ST_STATE/trees/lima/probe"   "agent cannot write its own tree state"
     probe "$ST_STATE/pm/launch.jsonl"      && fail "agent can write the PM's launch queue"
     probe "$ST_STATE/trees/quito/probe"    && fail "agent can write another tree's state"
     probe "$HOME/supatree/trees/quito/x"   && fail "agent can write another tree"
