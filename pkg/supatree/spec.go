@@ -33,9 +33,10 @@ type Spec struct {
 }
 
 // ErrOldSpec is what reading a supatree.yml written in the old format says: it
-// listed members by workbench alias, and supatree no longer reads workbench's
+// listed members by workbench alias, and supatree does not read workbench's
 // config to resolve them.
-var ErrOldSpec = errors.New("supatree.yml lists members by alias, the format before members carried their git URL — run: supatree migrate")
+var ErrOldSpec = errors.New("supatree.yml lists members by alias, a format supatree no longer reads — " +
+	"map each alias to its git URL instead (members:\n  <alias>: <url>)")
 
 // LoadSpec reads supatree.yml from a stack/supatree root.
 func LoadSpec(root string) (*Spec, error) {

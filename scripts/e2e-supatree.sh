@@ -3,8 +3,7 @@ set -euo pipefail
 
 # E2E test for supatree: scaffold a stack, create a supatree spanning two repos
 # with a dependency edge, sync a third in, rename branches, and tear down.
-# Runs against an isolated HOME. Requires supatree on PATH; the migration case
-# also runs `workbench migrate` when a workbench new enough to have it is there.
+# Runs against an isolated HOME. Requires supatree on PATH.
 
 # The sandbox enforcement case below needs a real, enforcing nono, and cannot
 # run from inside a nono sandbox (macOS refuses nested sandboxes). When it can
@@ -282,67 +281,6 @@ supatree rm kyiv -y --force >/dev/null
 supatree stack clone "$T" --as t2 >/dev/null || fail "stack clone failed"
 supatree new --stack t2 --name riga >/dev/null || fail "new tree from a cloned stack failed"
 supatree rm riga -y --force >/dev/null
-
-# Old layout: every command but migrate/version refuses, with one line saying
-# what to do, rather than half-working against files it no longer reads. Then
-# both migrations, and a tree from the migrated stack. (The ssh-alias origin
-# case is a Go test: ssh reads ~/.ssh/config from the passwd home, not $HOME.)
-echo "--- old layout + migrate ---"
-OLD=$(mktemp -d)
-( export HOME="$OLD" XDG_CONFIG_HOME="$OLD/.config" XDG_STATE_HOME="$OLD/.local/state" XDG_CACHE_HOME="$OLD/.cache"
-  git config --global user.email "e2e@test.local"
-  git config --global user.name "e2e"
-  git config --global init.defaultBranch main
-  for r in api web; do
-      git init -q "$OLD/code/$r" && git -C "$OLD/code/$r" commit --allow-empty -qm initial
-  done
-  echo "SECRET=1" > "$OLD/code/api/.env"
-  mkdir -p "$OLD/.workbench" "$OLD/.supatree/stacks/old"
-  cat > "$OLD/.workbench/config.yml" <<YML
-version: 1
-default_model: claude
-models:
-  claude: {nono_profile: claude-code-local, binary: claude}
-repos:
-  - {alias: api, local_path: $OLD/code/api, copy_files: [.env], startup_script: /nope.sh}
-  - {alias: web, local_path: $OLD/code/web}
-YML
-  STACKO="$OLD/.supatree/stacks/old"
-  git init -q "$STACKO"
-  printf 'members: [api, web]\ndeps:\n  web: [api]\n' > "$STACKO/supatree.yml"
-  git -C "$STACKO" add -A && git -C "$STACKO" commit -qm init
-  printf 'version: 1\nstacks:\n  - {alias: old, path: %s}\n' "$STACKO" > "$OLD/.supatree/config.yml"
-
-  out=$(supatree ls 2>&1) && fail "supatree ls ran on the old layout"
-  echo "$out" | grep "supatree migrate" >/dev/null || fail "old-layout refusal does not say what to run: $out"
-  supatree version >/dev/null || fail "supatree version refused on the old layout"
-  HAVE_WB=; workbench migrate --help >/dev/null 2>&1 && HAVE_WB=1
-  if [ -n "$HAVE_WB" ]; then
-      workbench ls >/dev/null 2>&1 && fail "workbench ls ran on the old layout"
-  fi
-
-  supatree migrate --dry-run --skip-live-check >/dev/null || fail "migrate --dry-run failed"
-  [ -d "$OLD/.supatree" ] || fail "a dry run moved something"
-  supatree migrate --skip-live-check || fail "supatree migrate failed"
-  [ -d "$OLD/.supatree.pre-xdg" ] || fail "~/.supatree not set aside"
-  if [ -n "$HAVE_WB" ]; then
-      workbench migrate --skip-live-check || fail "workbench migrate failed"
-      [ -d "$OLD/.workbench.pre-xdg" ] || fail "~/.workbench not set aside"
-      grep "startup_script" "$OLD/.config/workbench/config.yml" >/dev/null && fail "workbench migrate kept a removed field"
-  else
-      echo "    (no workbench with migrate on PATH — skipping its half)"
-  fi
-  STACKN="$OLD/supatree/stacks/old"
-  grep "api: $OLD/code/api" "$STACKN/supatree.yml" >/dev/null || fail "stack not rewritten to URL form: $(cat "$STACKN/supatree.yml")"
-  [ -z "$(git -C "$STACKN" status --porcelain)" ] || fail "spec rewrite not committed"
-  [ "$(cat "$OLD/supatree/repos/local$OLD/code/api/.env")" = "SECRET=1" ] || fail "copy_files not carried into the cache clone"
-
-  # With workbench's config gone entirely, the migrated stack still works.
-  rm -rf "$OLD/.config/workbench" "$OLD/.workbench.pre-xdg" "$OLD/.workbench"
-  supatree new --stack old --name oslo >/dev/null || fail "new tree from a migrated stack failed"
-  [ "$(cat "$OLD/supatree/trees/oslo/repos/api/.env")" = "SECRET=1" ] || fail "copy_files did not reach the new tree"
-  supatree rm oslo -y --force >/dev/null )
-rm -rf "$OLD"
 
 # Sandbox enforcement: run a probe under exactly the flags a tree agent gets
 # and check the boundary holds (see ENFORCE at the top).

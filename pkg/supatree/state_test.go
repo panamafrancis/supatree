@@ -119,22 +119,3 @@ func TestTreeGrantsScope(t *testing.T) {
 		}
 	}
 }
-
-func TestOldLayout(t *testing.T) {
-	home := testutil.IsolateHome(t)
-	if OldLayout() {
-		t.Error("fresh home reads as the old layout")
-	}
-	if err := os.MkdirAll(filepath.Join(home, ".supatree"), 0755); err != nil {
-		t.Fatal(err)
-	}
-	if !OldLayout() {
-		t.Error("~/.supatree with no XDG config is the old layout")
-	}
-	if err := DefaultConfig().Save(); err != nil {
-		t.Fatal(err)
-	}
-	if OldLayout() {
-		t.Error("once the XDG config exists the old dir is a leftover, not the layout")
-	}
-}

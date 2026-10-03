@@ -29,6 +29,24 @@ func run(t *testing.T, dir string, args ...string) {
 	}
 }
 
+func gitGlobal(t *testing.T, args ...string) {
+	t.Helper()
+	cmd := exec.CommandContext(context.Background(), "git", append([]string{"config", "--global"}, args...)...)
+	if out, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("git config: %v %s", err, out)
+	}
+}
+
+func writeFile(t *testing.T, path, body string) {
+	t.Helper()
+	if err := os.MkdirAll(filepath.Dir(path), 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, []byte(body), 0644); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func branchExists(t *testing.T, repo, branch string) bool {
 	t.Helper()
 	cmd := exec.CommandContext(context.Background(), "git", "-C", repo,

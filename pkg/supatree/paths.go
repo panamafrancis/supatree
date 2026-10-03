@@ -94,12 +94,6 @@ func LockPath() string {
 	return filepath.Join(StateRoot(), "config.lock")
 }
 
-// LegacyDir is the pre-XDG home of everything (~/.supatree). Only the
-// old-layout guard and `supatree migrate` look at it.
-func LegacyDir() string {
-	return filepath.Join(xdg.Home(), ".supatree")
-}
-
 // stateDirName is the gitignored link, inside a tree, to that tree's state.
 const stateDirName = ".supatree"
 
@@ -307,18 +301,4 @@ func LaunchPath() string {
 // LaunchLockPath serializes appends to and drains of the launch queue.
 func LaunchLockPath() string {
 	return LaunchPath() + ".lock"
-}
-
-// OldLayoutMessage is what every command says while the old layout is live.
-const OldLayoutMessage = "supatree's files are still in ~/.supatree from an older version — close every supatree " +
-	"(supatree rm), quit every st-* zellij session, then run: supatree migrate"
-
-// OldLayout reports whether ~/.supatree is still where supatree's files are:
-// it exists and nothing has been migrated to the XDG config path yet.
-func OldLayout() bool {
-	if _, err := os.Stat(LegacyDir()); err != nil {
-		return false
-	}
-	_, err := os.Stat(ConfigPath())
-	return os.IsNotExist(err)
 }

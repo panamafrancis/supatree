@@ -15,11 +15,6 @@ var mcpCmd = &cobra.Command{
 	PersistentPreRunE: func(*cobra.Command, []string) error { return nil },
 	RunE: func(cmd *cobra.Command, args []string) error {
 		zellij.LogDir = supatree.LogsDir()
-		return supatree.MCPServer(version.Version).WithPrecondition(func() string {
-			if supatree.OldLayout() {
-				return supatree.OldLayoutMessage
-			}
-			return ""
-		}).Run()
+		return supatree.MCPServer(version.Version).Run()
 	},
 }

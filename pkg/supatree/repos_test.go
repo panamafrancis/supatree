@@ -74,7 +74,7 @@ func TestResolveMemberClonesOnce(t *testing.T) {
 	}
 }
 
-func TestOldSpecFormatSaysMigrate(t *testing.T) {
+func TestOldSpecFormatRefused(t *testing.T) {
 	_, err := parseSpec([]byte("members: [a, b]\n"))
 	if !errors.Is(err, ErrOldSpec) {
 		t.Errorf("err = %v, want ErrOldSpec", err)

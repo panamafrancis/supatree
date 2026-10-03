@@ -48,11 +48,8 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
 
-      - name: Build supatree, and the workbench version it is pinned to
-        run: |
-          go build -ldflags="-s -w" -o dist/supatree ./cmd/supatree
-          # The migration case also exercises `workbench migrate`.
-          GOBIN="$(pwd)/dist" go install "github.com/panamafrancis/workbench@$(go list -m -f '{{.Version}}' github.com/panamafrancis/workbench)"
+      - name: Build supatree
+        run: go build -ldflags="-s -w" -o dist/supatree ./cmd/supatree
 
       - name: Run e2e tests
         run: PATH="$(pwd)/dist:$PATH" bash scripts/e2e-supatree.sh

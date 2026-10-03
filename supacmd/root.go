@@ -4,7 +4,6 @@
 package supacmd
 
 import (
-	"errors"
 	"fmt"
 	"os"
 
@@ -49,9 +48,6 @@ var rootCmd = &cobra.Command{
 		zellij.LogDir = supatree.LogsDir()
 		// Unsandboxed: git here runs in clones agents can write to.
 		git.HardenGit()
-		if supatree.OldLayout() && !layoutExempt[cmd.Name()] {
-			return errors.New(supatree.OldLayoutMessage)
-		}
 		var err error
 		if stCfg, err = supatree.Load(); err != nil {
 			return fmt.Errorf("load supatree config: %w", err)
@@ -59,10 +55,6 @@ var rootCmd = &cobra.Command{
 		return nil
 	},
 }
-
-// layoutExempt are the commands that still run on the old layout: the one that
-// moves it, and the ones that only report.
-var layoutExempt = map[string]bool{"migrate": true, "version": true, "doctor": true, "help": true}
 
 // Execute runs the supatree CLI.
 func Execute() {

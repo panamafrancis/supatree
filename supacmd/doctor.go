@@ -14,15 +14,12 @@ import (
 var doctorCmd = &cobra.Command{
 	Use:   "doctor",
 	Short: "Check that supatree can launch agents: zellij, git, nono and every model's nono profile",
-	// Runs on any layout: it is where someone stuck mid-upgrade looks first.
+	// Runs with a broken config too: it reports that rather than refusing.
 	PersistentPreRunE: func(*cobra.Command, []string) error { return nil },
 	RunE: func(cmd *cobra.Command, args []string) error {
 		var cfg *supatree.Config
 		var results []setup.CheckResult
-		if supatree.OldLayout() {
-			results = append(results, setup.CheckResult{Name: "layout", Status: setup.StatusFail,
-				Message: "still ~/.supatree", Hint: supatree.OldLayoutMessage})
-		} else if c, err := supatree.Load(); err != nil {
+		if c, err := supatree.Load(); err != nil {
 			results = append(results, setup.CheckResult{Name: "config", Status: setup.StatusFail, Message: err.Error()})
 		} else {
 			cfg = c

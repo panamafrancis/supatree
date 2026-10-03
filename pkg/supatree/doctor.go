@@ -15,8 +15,8 @@ import (
 // Doctor checks what supatree needs to launch agents: zellij, git, nono, and
 // every nono profile a configured model runs under — with each profile it
 // extends, so a parent broken by a nono upgrade is named rather than found by
-// an agent tab that closes the moment it opens. cfg may be nil (the old
-// layout), in which case only supatree's own agent profile is checked.
+// an agent tab that closes the moment it opens. cfg may be nil (a config that
+// does not load), in which case only supatree's own agent profile is checked.
 func Doctor(cfg *Config) []setup.CheckResult {
 	results := []setup.CheckResult{
 		toolCheck("zellij", "brew install zellij", "--version"),
