@@ -2,12 +2,11 @@ module github.com/panamafrancis/supatree
 
 go 1.26.0
 
-
 require (
-	github.com/panamafrancis/workbench v0.0.14
 	github.com/charmbracelet/bubbles v1.0.0
 	github.com/charmbracelet/bubbletea v1.3.10
 	github.com/charmbracelet/lipgloss v1.1.0
+	github.com/panamafrancis/workbench v0.0.15-0.20261003103738-f2187bbb3553
 	github.com/spf13/cobra v1.10.2
 	gopkg.in/yaml.v3 v3.0.1
 )
