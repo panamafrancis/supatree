@@ -6,9 +6,9 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/spf13/cobra"
 
+	"github.com/panamafrancis/supatree/pkg/supatree"
+	stui "github.com/panamafrancis/supatree/pkg/supatree/tui"
 	"github.com/panamafrancis/workbench/pkg/github"
-	"github.com/panamafrancis/workbench/pkg/supatree"
-	stui "github.com/panamafrancis/workbench/pkg/supatree/tui"
 )
 
 var lsCmd = &cobra.Command{

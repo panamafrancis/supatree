@@ -5,8 +5,8 @@ import (
 
 	"github.com/spf13/cobra"
 
+	"github.com/panamafrancis/supatree/pkg/supatree"
 	"github.com/panamafrancis/workbench/pkg/sandbox"
-	"github.com/panamafrancis/workbench/pkg/supatree"
 )
 
 var sandboxPM bool

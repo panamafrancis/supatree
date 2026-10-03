@@ -521,3 +521,12 @@ Where the implementation departed from the text above, and why.
   command-running git settings (`git.HardenGit`) and refuse repositories
   whose local config sets the ones that cannot be pinned. `repo rm` asks the
   clone's own worktree list, and a failed `migrate` can be re-run.
+- **Step 5 done locally (2026-10-03):** the supatree paths were extracted
+  with `git filter-branch` (filter-repo was not installed), 47 commits, and
+  merged into this repo on top of its initial commit. Module
+  `github.com/panamafrancis/supatree`; it requires workbench v0.0.14 until
+  workbench's split branch is merged, after which it is bumped to that
+  commit's pseudo-version (`go get github.com/panamafrancis/workbench@<sha>`,
+  then `GOWORK=off go mod tidy`). Until then it builds only through a
+  `go.work` beside both checkouts. Supatree has no update check of its own
+  yet; workbench's no longer mentions it.

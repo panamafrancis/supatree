@@ -4,7 +4,7 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/spf13/cobra"
 
-	"github.com/panamafrancis/workbench/pkg/supatree/dash"
+	"github.com/panamafrancis/supatree/pkg/supatree/dash"
 )
 
 var dashCmd = &cobra.Command{

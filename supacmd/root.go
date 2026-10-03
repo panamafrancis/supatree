@@ -10,8 +10,8 @@ import (
 
 	"github.com/spf13/cobra"
 
+	"github.com/panamafrancis/supatree/pkg/supatree"
 	"github.com/panamafrancis/workbench/pkg/git"
-	"github.com/panamafrancis/workbench/pkg/supatree"
 	"github.com/panamafrancis/workbench/pkg/zellij"
 )
 

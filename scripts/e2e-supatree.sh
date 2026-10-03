@@ -3,7 +3,8 @@ set -euo pipefail
 
 # E2E test for supatree: scaffold a stack, create a supatree spanning two repos
 # with a dependency edge, sync a third in, rename branches, and tear down.
-# Runs against an isolated HOME. Requires: workbench + supatree on PATH.
+# Runs against an isolated HOME. Requires supatree on PATH; the migration case
+# also runs `workbench migrate` when a workbench new enough to have it is there.
 
 # The sandbox enforcement case below needs a real, enforcing nono, and cannot
 # run from inside a nono sandbox (macOS refuses nested sandboxes). When it can
@@ -315,21 +316,29 @@ YML
   out=$(supatree ls 2>&1) && fail "supatree ls ran on the old layout"
   echo "$out" | grep "supatree migrate" >/dev/null || fail "old-layout refusal does not say what to run: $out"
   supatree version >/dev/null || fail "supatree version refused on the old layout"
-  workbench ls >/dev/null 2>&1 && fail "workbench ls ran on the old layout"
+  HAVE_WB=; workbench migrate --help >/dev/null 2>&1 && HAVE_WB=1
+  if [ -n "$HAVE_WB" ]; then
+      workbench ls >/dev/null 2>&1 && fail "workbench ls ran on the old layout"
+  fi
 
   supatree migrate --dry-run --skip-live-check >/dev/null || fail "migrate --dry-run failed"
   [ -d "$OLD/.supatree" ] || fail "a dry run moved something"
   supatree migrate --skip-live-check || fail "supatree migrate failed"
-  workbench migrate --skip-live-check || fail "workbench migrate failed"
-  [ -d "$OLD/.supatree.pre-xdg" ] && [ -d "$OLD/.workbench.pre-xdg" ] || fail "old layouts not set aside"
-  grep "startup_script" "$OLD/.config/workbench/config.yml" >/dev/null && fail "workbench migrate kept a removed field"
+  [ -d "$OLD/.supatree.pre-xdg" ] || fail "~/.supatree not set aside"
+  if [ -n "$HAVE_WB" ]; then
+      workbench migrate --skip-live-check || fail "workbench migrate failed"
+      [ -d "$OLD/.workbench.pre-xdg" ] || fail "~/.workbench not set aside"
+      grep "startup_script" "$OLD/.config/workbench/config.yml" >/dev/null && fail "workbench migrate kept a removed field"
+  else
+      echo "    (no workbench with migrate on PATH — skipping its half)"
+  fi
   STACKN="$OLD/supatree/stacks/old"
   grep "api: $OLD/code/api" "$STACKN/supatree.yml" >/dev/null || fail "stack not rewritten to URL form: $(cat "$STACKN/supatree.yml")"
   [ -z "$(git -C "$STACKN" status --porcelain)" ] || fail "spec rewrite not committed"
   [ "$(cat "$OLD/supatree/repos/local$OLD/code/api/.env")" = "SECRET=1" ] || fail "copy_files not carried into the cache clone"
 
   # With workbench's config gone entirely, the migrated stack still works.
-  rm -rf "$OLD/.config/workbench" "$OLD/.workbench.pre-xdg"
+  rm -rf "$OLD/.config/workbench" "$OLD/.workbench.pre-xdg" "$OLD/.workbench"
   supatree new --stack old --name oslo >/dev/null || fail "new tree from a migrated stack failed"
   [ "$(cat "$OLD/supatree/trees/oslo/repos/api/.env")" = "SECRET=1" ] || fail "copy_files did not reach the new tree"
   supatree rm oslo -y --force >/dev/null )

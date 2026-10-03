@@ -5,8 +5,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/panamafrancis/supatree/pkg/supatree"
 	"github.com/panamafrancis/workbench/pkg/github"
-	"github.com/panamafrancis/workbench/pkg/supatree"
 )
 
 func openPR(review github.ReviewState) *github.PRInfo {

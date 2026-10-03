@@ -14,8 +14,8 @@ import (
 
 	tea "github.com/charmbracelet/bubbletea"
 
+	"github.com/panamafrancis/supatree/pkg/supatree"
 	"github.com/panamafrancis/workbench/pkg/github"
-	"github.com/panamafrancis/workbench/pkg/supatree"
 	"github.com/panamafrancis/workbench/pkg/zellij"
 )
 
