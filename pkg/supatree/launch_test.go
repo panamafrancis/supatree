@@ -76,7 +76,7 @@ func TestForwardPMMail(t *testing.T) {
 	if err != nil || n != 1 {
 		t.Fatalf("ForwardPMMail = %d, %v; want 1, nil", n, err)
 	}
-	reqs, _, err := PendingRequests()
+	reqs, _, err := PendingRequests("")
 	if err != nil {
 		t.Fatal(err)
 	}

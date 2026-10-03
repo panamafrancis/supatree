@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"path/filepath"
 	"strings"
 	"time"
 
@@ -18,9 +19,10 @@ import (
 const KickoffPrompt = "You have been started with messages waiting. Read .supatree/info.md, " +
 	"then call the `inbox` tool and carry out what it asks, end to end, without waiting for further input."
 
-// PMAgentName is the name a tree agent uses to address the PM. The PM is in no
-// tree's agents.yml, so message_agent special-cases it, and the watcher
-// forwards what lands in that mailbox into the PM's request queue.
+// PMAgentName is the name a tree agent uses to address the top PM, and the
+// stem of every other PM's agent name ("pm-<name>", see PM.AgentID). PMs are in
+// no tree's agents.yml, so message_agent special-cases them, and the watcher
+// forwards what lands in those mailboxes into the PMs' request queue.
 const PMAgentName = "pm"
 
 // LaunchRequest asks the watcher to open an agent's tab. The PM cannot do it
@@ -99,32 +101,60 @@ func ForwardPMMail(insts []*Instance) (int, error) {
 	n := 0
 	var firstErr error
 	for _, inst := range insts {
-		msgs, err := Mail(inst.Root, PMAgentName)
-		if err != nil || len(msgs) == 0 {
-			continue
-		}
-		for _, m := range msgs {
-			req := Request{At: m.At, From: m.From, Tree: inst.Name, Text: m.Text}
-			if err := AppendRequest(req); err != nil {
-				if firstErr == nil {
-					firstErr = err
-				}
+		for _, box := range pmMailboxes(inst.Root) {
+			msgs, err := Mail(inst.Root, box)
+			if err != nil || len(msgs) == 0 {
 				continue
 			}
-			// Removed only once queued: a failed append leaves the message to
-			// be forwarded next round rather than lost.
-			_ = os.Remove(m.Path)
-			n++
+			// "pm" is the top PM, which an unaddressed request reaches anyway.
+			to := strings.TrimPrefix(strings.TrimPrefix(box, PMAgentName), "-")
+			for _, m := range msgs {
+				req := Request{At: m.At, From: m.From, Tree: inst.Name, To: to, Text: m.Text}
+				if err := AppendRequest(req); err != nil {
+					if firstErr == nil {
+						firstErr = err
+					}
+					continue
+				}
+				// Removed only once queued: a failed append leaves the message
+				// to be forwarded next round rather than lost.
+				_ = os.Remove(m.Path)
+				n++
+			}
 		}
 	}
 	return n, firstErr
+}
+
+// pmMailboxes lists the mailboxes in a tree addressed to a PM rather than to
+// one of the tree's own agents.
+func pmMailboxes(root string) []string {
+	entries, err := os.ReadDir(filepath.Dir(MailDir(root, PMAgentName)))
+	if err != nil {
+		return nil
+	}
+	// Without agents.yml a "pm-x" mailbox may be a real tree agent's, and
+	// forwarding consumes it — so only the unambiguous top-PM box is taken.
+	agents, agentsErr := LoadAgents(root)
+	var out []string
+	for _, e := range entries {
+		if agentsErr != nil && e.Name() != PMAgentName {
+			continue
+		}
+		if e.IsDir() && IsPMAgentID(e.Name()) && FindAgent(agents, e.Name()) == nil {
+			out = append(out, e.Name())
+		}
+	}
+	return out
 }
 
 // DefaultReviewBrief is what a review tree's agent is told to do when the PM
 // starts it without a brief of its own. It is the hands-off version of the
 // review craft in `docs topic: review`: do the whole review, leave it where
 // the human and the PM can both read it, and say when it is done.
-func DefaultReviewBrief(inst *Instance) string {
+//
+// pm is the agent name of the PM starting it, which is who the summary goes to.
+func DefaultReviewBrief(inst *Instance, pm string) string {
 	var b strings.Builder
 	b.WriteString("Review the pull requests checked out in this tree, end to end, without waiting for further input.\n\n")
 	for _, m := range inst.Members {
@@ -138,7 +168,7 @@ func DefaultReviewBrief(inst *Instance) string {
 3. Build, lint and test each repo here, and do the cross-repo check.
 4. Write the full review to .supatree/review.md: one section per pull request, blocking findings separated from non-blocking ones, every line number taken from the pull request head.
 5. Post one batched review per pull request with ` + "`review_post`" + `: APPROVE if nothing blocks, REQUEST_CHANGES if something does. If it is refused, leave the review in .supatree/review.md for the human to post.
-6. When you are done, call ` + "`message_agent`" + ` with agent "pm" and a three-line summary: the verdict per pull request and where the review is.
+6. When you are done, call ` + "`message_agent`" + ` with agent "` + pm + `" and a three-line summary: the verdict per pull request and where the review is.
 `)
 	return b.String()
 }

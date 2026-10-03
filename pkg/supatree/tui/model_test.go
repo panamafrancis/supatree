@@ -55,19 +55,19 @@ func TestRebuildRowsStructure(t *testing.T) {
 	// The PM section always leads. Repositories start folded, so out of the
 	// box: tree, "agents" subheader, main agent, "repositories" header — and no
 	// member rows.
-	want := []rowKind{rowPM, rowDivider, rowTree, rowSubheader, rowAgent, rowRepos}
+	want := []rowKind{rowPMHeader, rowPM, rowDivider, rowTree, rowSubheader, rowAgent, rowRepos}
 	if got := rowKinds(m); !slices.Equal(got, want) {
 		t.Fatalf("folded rows = %v, want %v", got, want)
 	}
 
 	// Unfolding the section adds the members under it.
 	expandRepos(m)
-	want = []rowKind{rowPM, rowDivider, rowTree, rowSubheader, rowAgent, rowRepos, rowMember, rowMember}
+	want = []rowKind{rowPMHeader, rowPM, rowDivider, rowTree, rowSubheader, rowAgent, rowRepos, rowMember, rowMember}
 	if got := rowKinds(m); !slices.Equal(got, want) {
 		t.Fatalf("unfolded rows = %v, want %v", got, want)
 	}
-	// Cursor must never rest on a subheader or the divider.
-	for _, i := range []int{1, pmSectionRows + 1} {
+	// Cursor must never rest on a heading, a subheader or the divider.
+	for _, i := range []int{0, pmSectionRows - 1, pmSectionRows + 1} {
 		m.cursor = i
 		m.clampCursor()
 		if !m.rows[m.cursor].kind.selectable() {
@@ -457,12 +457,13 @@ func TestGotoTopAndBottom(t *testing.T) {
 	if m.pending != "g" {
 		t.Fatalf("first g did not arm the prefix: pending = %q", m.pending)
 	}
-	if m.cursor == 0 {
+	top := rowIndex(m, rowPM) // the first selectable row, under the PM heading
+	if m.cursor == top {
 		t.Fatal("a lone g must not move the cursor")
 	}
 	_, _ = m.Update(key("g"))
-	if m.cursor != 0 {
-		t.Fatalf("gg: cursor = %d, want 0", m.cursor)
+	if m.cursor != top {
+		t.Fatalf("gg: cursor = %d, want %d (the top PM)", m.cursor, top)
 	}
 	if m.pending != "" {
 		t.Fatalf("prefix not cleared: %q", m.pending)
@@ -593,7 +594,7 @@ func TestClickSelectsRow(t *testing.T) {
 
 	// Clicking a subheader or the divider is ignored — the cursor never rests on
 	// either.
-	for _, y := range []int{1, pmSectionRows + 1} {
+	for _, y := range []int{0, pmSectionRows - 1, pmSectionRows + 1} {
 		_, _ = m.Update(tea.MouseMsg{
 			Button: tea.MouseButtonLeft, Action: tea.MouseActionRelease, Y: y + rowsTopOffset,
 		})
@@ -803,16 +804,18 @@ func TestHelpOpensAndCloses(t *testing.T) {
 	}
 }
 
-// The PM section leads the list even with no supatrees, is where gg lands, and
-// the tree-scoped keys do nothing on it rather than acting on a tree named "".
+// The PM section leads the list even with no supatrees, under its heading, is
+// where gg lands, and the tree-scoped keys do nothing on it rather than acting
+// on a tree named "".
 func TestPMRowPinnedAtTop(t *testing.T) {
 	testutil.IsolateHome(t)
 	m := New(supatree.DefaultConfig(), zellij.Workspace{})
-	if got := rowKinds(m); !slices.Equal(got, []rowKind{rowPM, rowDivider}) {
+	if got := rowKinds(m); !slices.Equal(got, []rowKind{rowPMHeader, rowPM, rowDivider}) {
 		t.Fatalf("empty rows = %v, want the PM section alone", got)
 	}
-	if out := m.View(); !strings.Contains(out, "◆ PM") {
-		t.Errorf("empty view missing the PM row:\n%s", out)
+	out := m.View()
+	if !strings.Contains(out, "Product Managers") || !strings.Contains(out, "◆ pm") {
+		t.Errorf("empty view missing the PM section:\n%s", out)
 	}
 
 	m = threeTrees(t)
@@ -821,12 +824,16 @@ func TestPMRowPinnedAtTop(t *testing.T) {
 	if sel := m.selected(); sel == nil || sel.kind != rowPM {
 		t.Fatalf("k from the first tree landed on %+v, want the PM row (skipping the divider)", sel)
 	}
+	_, _ = m.Update(key("k"))
+	if sel := m.selected(); sel == nil || sel.kind != rowPM {
+		t.Fatalf("k from the PM row landed on %+v, want it to stay off the heading", sel)
+	}
 	if !strings.Contains(m.footer(), "enter PM") {
 		t.Errorf("footer on the PM row = %q, want the PM hint", m.footer())
 	}
 
 	before := len(m.rows)
-	for _, k := range []string{" ", "h", "l", "a", "d", "s"} {
+	for _, k := range []string{" ", "h", "l", "s"} {
 		_, cmd := m.Update(key(k))
 		if m.mode != modeNormal || cmd != nil || len(m.rows) != before {
 			t.Fatalf("%q on the PM row acted: mode %v, cmd %v, rows %d→%d", k, m.mode, cmd != nil, before, len(m.rows))
@@ -839,14 +846,74 @@ func TestPMRowPinnedAtTop(t *testing.T) {
 
 func TestPMRowShowsPendingAndRunning(t *testing.T) {
 	m := threeTrees(t)
-	pm := m.renderPM(false)
+	pm := m.renderPM(supatree.DefaultPMName, false)
 	if strings.Contains(pm, "✉") || strings.Contains(pm, "●") {
 		t.Fatalf("idle PM row has badges: %q", pm)
 	}
-	_, _ = m.Update(pmPendingMsg{n: 2})
+	_, _ = m.Update(pmPendingMsg{n: map[string]int{supatree.DefaultPMName: 2}})
 	_, _ = m.Update(runningMsg{tabs: map[string]bool{supatree.PMTab: true}})
-	pm = m.renderPM(false)
+	pm = m.renderPM(supatree.DefaultPMName, false)
 	if !strings.Contains(pm, "✉2") || !strings.Contains(pm, "●") {
 		t.Fatalf("PM row = %q, want the pending count and the running dot", pm)
+	}
+}
+
+// Every PM gets a row, top first, and each badge is its own.
+func TestPMSectionListsEveryPM(t *testing.T) {
+	m := threeTrees(t)
+	if _, err := supatree.AddPM("research", ""); err != nil {
+		t.Fatal(err)
+	}
+	m.reload()
+	if got := rowKinds(m)[:4]; !slices.Equal(got, []rowKind{rowPMHeader, rowPM, rowPM, rowDivider}) {
+		t.Fatalf("PM section = %v, want a heading, both PMs and the divider", got)
+	}
+	if m.rows[1].label != supatree.DefaultPMName || m.rows[2].label != "research" {
+		t.Errorf("PM rows = %q, %q; want the default on top", m.rows[1].label, m.rows[2].label)
+	}
+	_, _ = m.Update(runningMsg{tabs: map[string]bool{supatree.PMTab + ":research": true}})
+	if strings.Contains(m.renderPM(supatree.DefaultPMName, false), "●") || !strings.Contains(m.renderPM("research", false), "●") {
+		t.Error("the running dot follows the wrong PM's tab")
+	}
+}
+
+// a on a PM row names a new PM; d removes one, after a confirmation, and is
+// refused for the only PM.
+func TestPMSectionAddAndRemove(t *testing.T) {
+	m := threeTrees(t)
+	m.cursor = rowIndex(m, rowPM)
+
+	_, cmd := m.Update(key("d"))
+	if m.mode != modeNormal || cmd != nil || !strings.Contains(m.msg, "only PM") {
+		t.Fatalf("d on the only PM: mode %v, cmd %v, msg %q; want a refusal", m.mode, cmd != nil, m.msg)
+	}
+
+	_, _ = m.Update(key("a"))
+	if m.mode != modeNewPM {
+		t.Fatalf("a on the PM row: mode %v, want the new-PM prompt", m.mode)
+	}
+	for _, r := range supatree.DefaultPMName {
+		_, _ = m.Update(key(string(r)))
+	}
+	if m.inputErr == nil {
+		t.Error("a duplicate PM name was not flagged")
+	}
+	_, _ = m.Update(tea.KeyMsg{Type: tea.KeyEsc})
+
+	if _, err := supatree.AddPM("research", ""); err != nil {
+		t.Fatal(err)
+	}
+	m.reload()
+	m.cursor = rowIndex(m, rowPM) + 1
+	_, _ = m.Update(key("d"))
+	if m.mode != modeConfirmDeletePM || m.actionPM != "research" {
+		t.Fatalf("d on research: mode %v, target %q; want a confirmation", m.mode, m.actionPM)
+	}
+	if !strings.Contains(m.footer(), `remove PM "research"`) {
+		t.Errorf("footer = %q, want the confirmation", m.footer())
+	}
+	_, cmd = m.Update(key("n"))
+	if m.mode != modeNormal || cmd != nil {
+		t.Fatal("declining the removal still removed")
 	}
 }

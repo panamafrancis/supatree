@@ -2,6 +2,8 @@ package tui
 
 import (
 	"fmt"
+	"os"
+	"strings"
 	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
@@ -36,6 +38,9 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.attention = msg.attention
 	case pmPendingMsg:
 		m.pmPending = msg.n
+		if m.pmPending == nil {
+			m.pmPending = map[string]int{}
+		}
 	case runningMsg:
 		m.openTabs = msg.tabs
 	case prSkippedMsg:
@@ -199,6 +204,14 @@ func (m *Model) updateNormal(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 		return m, m.openSelected()
 	case "a":
+		if r := m.selected(); r != nil && r.kind == rowPM {
+			m.mode = modeNewPM
+			m.input.SetValue("")
+			m.inputErr = nil
+			m.input.Placeholder = "PM name"
+			m.input.Focus()
+			return m, nil
+		}
 		if r := m.selectedInTree(); r != nil {
 			// `a` reads the same everywhere — "give me an agent here" — so on a
 			// member row it opens that repo's scoped agent (nono allows only that
@@ -240,10 +253,19 @@ func (m *Model) updateNormal(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.input.Placeholder = "stack name"
 		m.input.Focus()
 	case "P":
-		return m, m.openPM()
+		return m, m.openPM("")
 	case "m":
 		return m, m.handToPM()
 	case "d":
+		if r := m.selected(); r != nil && r.kind == rowPM {
+			if len(m.pms) < 2 {
+				m.msg = "the only PM cannot be removed — add another first (a)"
+				return m, nil
+			}
+			m.mode = modeConfirmDeletePM
+			m.actionPM = r.label
+			return m, nil
+		}
 		if r := m.selectedInTree(); r != nil {
 			m.mode = modeConfirmDelete
 			m.actionTree = r.tree
@@ -253,6 +275,13 @@ func (m *Model) updateNormal(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 }
 
 func (m *Model) updateInput(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	if m.mode == modeConfirmDeletePM {
+		m.mode = modeNormal
+		if msg.String() != "y" && msg.String() != "Y" {
+			return m, nil
+		}
+		return m, m.removePM(m.actionPM)
+	}
 	if m.mode == modeConfirmDelete || m.mode == modeConfirmQuit {
 		confirmed := msg.String() == "y" || msg.String() == "Y"
 		wasDelete := m.mode == modeConfirmDelete
@@ -290,6 +319,20 @@ func (m *Model) updateInput(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 				return m, nil
 			}
 			return m, m.openAgent(tree, val)
+		case modeNewPM:
+			if val == "" {
+				m.mode = modeNormal
+				m.input.Blur()
+				return m, nil
+			}
+			if err := m.validatePMName(val); err != nil {
+				m.inputErr = err
+				return m, nil
+			}
+			m.mode = modeNormal
+			m.inputErr = nil
+			m.input.Blur()
+			return m, m.newPM(val)
 		case modeNewTreeName:
 			// A name the creator would reject keeps the prompt open with the
 			// reason attached, rather than tearing it down and leaving the
@@ -312,7 +355,7 @@ func (m *Model) updateInput(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.inputErr = nil
 			m.input.Blur()
 			return m, m.openStackNew(val)
-		case modeNormal, modeNewTree, modeConfirmDelete, modeConfirmQuit, modeHelp:
+		case modeNormal, modeNewTree, modeConfirmDelete, modeConfirmQuit, modeHelp, modeConfirmDeletePM:
 			// Not text-input modes; handled earlier in updateInput.
 		}
 		m.mode = modeNormal
@@ -333,7 +376,13 @@ func (m *Model) updateInput(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			} else {
 				m.inputErr = nil
 			}
-		case modeNormal, modeNewAgent, modeNewTree, modeConfirmDelete, modeConfirmQuit, modeHelp:
+		case modeNewPM:
+			if v := m.input.Value(); v != "" {
+				m.inputErr = m.validatePMName(v)
+			} else {
+				m.inputErr = nil
+			}
+		case modeNormal, modeNewAgent, modeNewTree, modeConfirmDelete, modeConfirmQuit, modeHelp, modeConfirmDeletePM:
 		}
 		return m, cmd
 	}
@@ -414,8 +463,8 @@ func (m *Model) openSelected() tea.Cmd {
 	}
 	switch r.kind {
 	case rowPM:
-		return m.openPM()
-	case rowDivider:
+		return m.openPM(r.label)
+	case rowDivider, rowPMHeader:
 		// Never selectable, so never reached.
 	case rowMember:
 		// A member row is a place, not a process: enter stands in it. The
@@ -548,8 +597,8 @@ func (m *Model) openDashboard() tea.Cmd {
 	}
 }
 
-// handToPM queues the selected row for the PM and focuses its tab, so you land
-// in the chat with it already reading about that supatree.
+// handToPM queues the selected row for the top PM and focuses its tab, so you
+// land in the chat with it already reading about that supatree.
 //
 // One verb on every row kind, which is what makes it learnable: what differs is
 // only how much context the row carries. It does not *open* the PM if it is not
@@ -574,7 +623,12 @@ func (m *Model) handToPM() tea.Cmd {
 		}
 	}
 	return func() tea.Msg {
+		top := supatree.PM{Name: supatree.DefaultPMName}
+		if pms, err := supatree.LoadPMs(); err == nil {
+			top = pms[0]
+		}
 		req := supatree.Request{
+			To:     top.Name,
 			From:   "sidebar",
 			Tree:   ctx.tree,
 			Member: ctx.alias,
@@ -587,7 +641,7 @@ func (m *Model) handToPM() tea.Cmd {
 		if zellij.IsInZellij() {
 			// Best effort: the request is queued either way, and failing to
 			// focus a tab that is not open is not a failure to hand over.
-			_ = zellij.GoToTab(supatree.PMTab)
+			_ = zellij.GoToTab(top.Tab())
 		}
 		return actionDoneMsg{msg: "handed " + ctx.tree + " to the PM"}
 	}
@@ -601,26 +655,91 @@ func handoffText(r row) string {
 		return fmt.Sprintf("Look at %s/%s.", r.tree, r.alias)
 	case rowAgent:
 		return fmt.Sprintf("Look at the %s agent in %s.", r.label, r.tree)
-	case rowTree, rowSubheader, rowRepos, rowPM, rowDivider:
+	case rowTree, rowSubheader, rowRepos, rowPM, rowDivider, rowPMHeader:
 		return fmt.Sprintf("Look at %s.", r.tree)
 	}
 	return "Look at " + r.tree + "."
 }
 
-// openPM opens or focuses the PM agent's tab. Unlike the dashboard it is a
-// sandboxed agent rather than a command pane, so it goes through OpenOrFocusTab
-// with its own grants rather than OpenOrFocusCommandTab.
-func (m *Model) openPM() tea.Cmd {
+// openPM opens or focuses a PM's tab; "" is the top PM. Unlike the dashboard
+// it is a sandboxed agent rather than a command pane, so it goes through
+// OpenOrFocusTab with its own grants rather than OpenOrFocusCommandTab.
+func (m *Model) openPM(name string) tea.Cmd {
 	stCfg, ws, width := m.stCfg, m.ws, m.stCfg.ResolveSidebarWidth()
 	return func() tea.Msg {
 		if !zellij.IsInZellij() {
 			return actionDoneMsg{msg: "not inside zellij — run: supatree pm"}
 		}
-		if _, err := supatree.OpenPM(stCfg, ws, width); err != nil {
+		if _, err := supatree.OpenPM(stCfg, ws, width, name); err != nil {
+			return actionDoneMsg{err: err}
+		}
+		return actionDoneMsg{msg: "PM " + name}
+	}
+}
+
+// coldStartCmd opens the top PM when this sidebar is the first one up in a
+// session `supatree start` has just created, so a cold start lands in a PM
+// rather than an empty shell. The marker is consumed by whichever sidebar
+// takes it first, which at a cold start is the only one there is; attaching
+// to a running session leaves no marker and the focus where it was.
+func (m *Model) coldStartCmd() tea.Cmd {
+	if !m.isSidebar {
+		return nil
+	}
+	session := os.Getenv("ZELLIJ_SESSION_NAME")
+	stCfg, ws, width := m.stCfg, m.ws, m.stCfg.ResolveSidebarWidth()
+	return func() tea.Msg {
+		if !supatree.TakeColdStart(session) {
+			return nil
+		}
+		if _, err := supatree.OpenPM(stCfg, ws, width, ""); err != nil {
 			return actionDoneMsg{err: err}
 		}
 		return actionDoneMsg{msg: "PM"}
 	}
+}
+
+// newPM registers a PM and opens it.
+func (m *Model) newPM(name string) tea.Cmd {
+	stCfg, ws, width := m.stCfg, m.ws, m.stCfg.ResolveSidebarWidth()
+	return func() tea.Msg {
+		if _, err := supatree.AddPM(name, ""); err != nil {
+			return actionDoneMsg{err: err}
+		}
+		if zellij.IsInZellij() {
+			if _, err := supatree.OpenPM(stCfg, ws, width, name); err != nil {
+				return actionDoneMsg{err: err}
+			}
+		}
+		return actionDoneMsg{msg: "added PM " + name}
+	}
+}
+
+// removePM closes a PM's tab and drops it from the registry.
+func (m *Model) removePM(name string) tea.Cmd {
+	ws := m.ws
+	return func() tea.Msg {
+		p, err := supatree.RemovePM(name)
+		if err != nil {
+			return actionDoneMsg{err: err}
+		}
+		msg := "removed PM " + name
+		if warnings := supatree.ClosePMTab(ws, p); len(warnings) > 0 {
+			msg += " (" + strings.Join(warnings, "; ") + ")"
+		}
+		return actionDoneMsg{msg: msg}
+	}
+}
+
+// validatePMName is the live check on the new-PM prompt.
+func (m *Model) validatePMName(name string) error {
+	if err := supatree.ValidatePMName(name); err != nil {
+		return err
+	}
+	if m.pm(name) != nil {
+		return fmt.Errorf("a PM named %q already exists", name)
+	}
+	return nil
 }
 
 func (m *Model) newTree(stack, name string) tea.Cmd {
@@ -652,16 +771,22 @@ func (m *Model) refreshAttentionCmd() tea.Cmd {
 	}
 }
 
-// refreshPMPendingCmd counts the requests the PM has not read yet, for the badge
-// on the PM row. Off the main loop because it scans the unread tail of the
+// refreshPMPendingCmd counts the requests each PM has not read yet, for the
+// badges on the PM rows. Off the main loop because it scans the unread tail of the
 // queue; an unreadable queue shows no badge rather than an error.
 func (m *Model) refreshPMPendingCmd() tea.Cmd {
 	return func() tea.Msg {
-		reqs, _, err := supatree.PendingRequests()
+		pms, err := supatree.LoadPMs()
 		if err != nil {
 			return pmPendingMsg{}
 		}
-		return pmPendingMsg{n: len(reqs)}
+		n := map[string]int{}
+		for _, p := range pms {
+			if reqs, _, err := supatree.PendingRequests(p.Name); err == nil {
+				n[p.Name] = len(reqs)
+			}
+		}
+		return pmPendingMsg{n: n}
 	}
 }
 

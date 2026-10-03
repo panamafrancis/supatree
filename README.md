@@ -64,7 +64,8 @@ supatree status                                 # activity of every supatree (op
 supatree dash                                   # full-screen dashboard of the same
 supatree watch                                  # background poller: activity ledger + desktop notifications
 supatree comments <tree> <repo>                 # what reviewers said, with unresolved threads first
-supatree pm                                     # the PM agent — sees every supatree at once
+supatree pm [name]                              # a PM agent — sees every supatree at once
+supatree pm new <name> / pm rm <name> / pm ls   # several PMs, top first
 supatree request "…"                            # queue something for the PM
 supatree schedule                               # recurring PM work (standups, triage, reminders)
 supatree message <tree> <agent> "…"             # leave a message in an agent's mailbox
@@ -88,7 +89,7 @@ supatree review fork <name>                     # turn the review into a proposa
 
 `supatree ls` (the sidebar in each supatree tab, and `supatree start`'s pane) is a TUI listing every supatree with its agents and member repos.
 
-The **PM** has a section of its own pinned at the very top, above a divider — `◆ PM`, with `●` while its tab is open and `✉N` for requests it has not read yet. It is there even before any supatree exists; `gg` then `enter` (or `P` from anywhere) opens or focuses it.
+The PMs have a section of their own pinned at the very top, **Product Managers**, above a divider — one `◆ <name>` row per PM, with `●` while its tab is open and `✉N` for requests it has not read yet. It is there even before any supatree exists; `gg` then `enter` (or `P` from anywhere) opens or focuses the top PM. `a` in the section adds a PM, `d` removes one. A cold `supatree start` opens the top PM for you; attaching to a running session leaves you where you were.
 
 | Key | Action |
 | --- | --- |
@@ -99,14 +100,14 @@ The **PM** has a section of its own pinned at the very top, above a divider — 
 | `Space` | Fold/unfold the innermost section — the repositories list on a repo row, otherwise the supatree |
 | `h` / `l` (or `←` / `→`) | Collapse / expand; `h` closes the repositories section first, then the supatree |
 | `zM` / `zR` | Fold / unfold **every** supatree |
-| `Enter` / `o` | Open the selected agent, a shell in the selected member repo, or the PM on the PM row |
-| `a` | Add an agent to the selected supatree — on a member row, open that repo's agent |
+| `Enter` / `o` | Open the selected agent, a shell in the selected member repo, or the PM on a PM row |
+| `a` | Add an agent to the selected supatree — on a member row, open that repo's agent; on a PM row, add a PM |
 | `n` | New supatree |
 | `s` | Sync the selected supatree |
-| `d` | Delete the selected supatree |
+| `d` | Delete the selected supatree — on a PM row, remove that PM |
 | `D` | Open (or focus) the dashboard tab |
-| `P` | Open (or focus) the PM agent |
-| `m` | Hand the selected row to the PM |
+| `P` | Open (or focus) the top PM |
+| `m` | Hand the selected row to the top PM |
 | `r` | Refresh (forces a PR status fetch) |
 | `?` | Keybinding reference (any key closes it) |
 | `q` | Quit (confirms in sidebar mode) |
@@ -170,6 +171,8 @@ pm_model: claude-pm     # a models entry whose nono_profile scopes the gh creden
 **Two rules it is given up front.** It never opens a Zellij tab unprompted — opening focuses the tab and yanks the terminal away from whoever is using it, so it creates trees and *reports*, and you press enter yourself. And it treats fetched text as data rather than instructions: a PR comment is written by anyone who can comment on the repository.
 
 It also cannot notify you directly — nothing inside the sandbox can — so its `notify` tool queues through the watcher, which applies the same tiering and deduping as its own events.
+
+**Several PMs.** `supatree pm new <name>` (or `a` on the sidebar's PM section) adds a PM below the others; `supatree pm rm <name>` (or `d`) removes one and closes its tab, and the last one cannot be removed. They all run in `~/.local/state/supatree/pm` with the same grants and instructions, and each resumes its own conversation by session ID; the list lives in `pm/pms.yml`, top first. Requests are routed rather than shared: each PM reads the queue from its own offset and keeps what is addressed to it (`supatree request --to <name>`), and the **top** PM also takes everything addressed to nobody — the watcher, the scheduler, `m` — so two PMs never both act on one request. Tree agents reach the top PM as `pm` and any other as `pm-<name>`. The PM from before there were several stays as `pm`, with its old tab, address and conversation.
 
 ## Autonomy
 
