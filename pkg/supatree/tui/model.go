@@ -119,10 +119,13 @@ type Model struct {
 	actionPM    string          // PM targeted by the active input mode
 	actionAgent string          // agent targeted by modeConfirmDeleteAgent (in actionTree)
 	creating    []string        // supatrees being created by this sidebar, shown until they land
-	helpScroll  int             // first line of the `?` reference in view
-	fetching    bool            // a PR fetch is in flight
-	ghAvailable bool            // gh usable; false after a permanent error suppresses tick fetches
-	prHint      string          // persistent PR-fetch hint (e.g. "gh rate limited")
+	helpScroll  int             // first line of the `?` panel in view
+	detail      string          // full error text the `?` panel shows instead of the reference (opened by `e`)
+	panel       []string        // the `?` panel folded to the pane, for panelKey
+	panelKey    panelKey
+	fetching    bool   // a PR fetch is in flight
+	ghAvailable bool   // gh usable; false after a permanent error suppresses tick fetches
+	prHint      string // persistent PR-fetch hint (e.g. "gh rate limited")
 	msg         string
 	err         error
 }
@@ -395,10 +398,14 @@ func (m *Model) appendTree(rows []row, inst *supatree.Instance) []row {
 	}
 	agents, _ := supatree.LoadAgents(inst.Root)
 	rows = append(rows, row{kind: rowSubheader, tree: inst.Name, label: "agents"})
-	if len(agents) == 0 {
-		rows = append(rows, row{kind: rowAgent, tree: inst.Name, label: supatree.MainAgent})
-	}
+	// Every tree has a main agent, listed first, whether or not agents.yml has
+	// recorded it yet — it is written there only once main is first opened, so
+	// a tree given a named agent before that would otherwise lose its main row.
+	rows = append(rows, row{kind: rowAgent, tree: inst.Name, label: supatree.MainAgent})
 	for _, a := range agents {
+		if a.Name == supatree.MainAgent {
+			continue
+		}
 		rows = append(rows, row{kind: rowAgent, tree: inst.Name, label: a.Name})
 	}
 	// The repositories header is a row of its own rather than a plain
