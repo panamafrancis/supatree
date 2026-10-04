@@ -1,0 +1,30 @@
+supatree
+  j/k ↑↓   move
+  ctrl+d/u half page
+  gg / G   first / last
+  } / {    next / prev tree
+  wheel    scroll
+  click    select
+
+Folding
+  space    fold this section
+  h / l    close / open
+  zM / zR  fold / unfold all
+
+Open
+  enter/o  agent, or shell
+           on a repo row, PM
+           on a PM row
+  a        new named agent,
+           repo agent on a
+           repo
+  p        new PM
+  D        dashboard
+  P        top PM
+  m        hand this row to
+           the top PM
+
+Remove
+  d        on a PM: remove
+j/k scroll (28/80) · other
+keys close                

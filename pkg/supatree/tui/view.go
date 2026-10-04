@@ -437,12 +437,38 @@ func wrapHanging(s string, width int, keyed bool) string {
 		prefix = s[:loc[3]]
 	}
 	pad := lipgloss.Width(prefix)
-	if width-pad < 10 {
-		// Too narrow to indent and still fit words; fold flush left.
+	rest := s[len(prefix):]
+	if width-pad >= minDescWidth {
+		return prefix + strings.TrimLeft(hang(rest, width, pad), " ")
+	}
+	// Too narrow to keep the description beside its key: the key takes a line
+	// of its own and the description folds under it, indented a little.
+	pad = min(pad, narrowHang)
+	if width-pad < 1 {
+		// Narrower than the hang itself: nothing fits beside it.
 		return wrapText(s, width)
 	}
-	body := wrapText(s[len(prefix):], width-pad)
-	return prefix + strings.ReplaceAll(body, "\n", "\n"+strings.Repeat(" ", pad))
+	key := strings.TrimRight(prefix, " ")
+	if key == "" {
+		return hang(rest, width, pad)
+	}
+	if lipgloss.Width(key) > width {
+		return wrapText(s, width)
+	}
+	return key + "\n" + hang(rest, width, pad)
+}
+
+const (
+	// minDescWidth is the narrowest a description column may be beside its key.
+	minDescWidth = 8
+	// narrowHang is the indent of a description folded under its key.
+	narrowHang = 4
+)
+
+// hang word-wraps text to width with every line indented by pad.
+func hang(text string, width, pad int) string {
+	indent := strings.Repeat(" ", pad)
+	return indent + strings.ReplaceAll(wrapText(text, width-pad), "\n", "\n"+indent)
 }
 
 func prIcon(s github.PRStatus) string {
