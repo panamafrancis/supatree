@@ -42,6 +42,7 @@ const (
 	modeHelp               // showing the keybinding reference
 	modeNewStackName       // naming a new stack (S)
 	modeConfirmDeleteAgent // removing an agent (d on an agent row)
+	modeNewReviewPRs       // listing the pull requests a new review tree checks out (N)
 )
 
 type rowKind int
@@ -119,6 +120,9 @@ type Model struct {
 	actionPM    string          // PM targeted by the active input mode
 	actionAgent string          // agent targeted by modeConfirmDeleteAgent (in actionTree)
 	creating    []string        // supatrees being created by this sidebar, shown until they land
+	reviewing   bool            // the pending new-tree flow is a review (N), not an authoring tree (n)
+	reviewPRs   []string        // pull requests given at the review prompt, carried to the name prompt
+	creatingRev []string        // review trees being created by this sidebar, shown under Reviews
 	helpScroll  int             // first line of the `?` panel in view
 	detail      string          // full error text the `?` panel shows instead of the reference (opened by `e`)
 	panel       []string        // the `?` panel folded to the pane, for panelKey
@@ -356,15 +360,11 @@ func (m *Model) rebuildRows() {
 			wip = append(wip, inst)
 		}
 	}
-	// A tree being created is listed under WIP straight away — creation clones
-	// and runs the stack's setup, which can take a while — and gives way to the
-	// real row as soon as the tree's state is on disk.
-	var creating []string
-	for _, name := range m.creating {
-		if m.instance(name) == nil {
-			creating = append(creating, name)
-		}
-	}
+	// A tree being created is listed under its section straight away — creation
+	// clones and runs the stack's setup, which can take a while — and gives way
+	// to the real row as soon as the tree's state is on disk.
+	creating := m.pendingCreates(m.creating)
+	creatingRev := m.pendingCreates(m.creatingRev)
 	// Each tree section appears only once it has something in it, so a fresh
 	// install shows the PMs alone and the Reviews heading waits for a review.
 	if len(wip) > 0 || len(creating) > 0 {
@@ -376,17 +376,32 @@ func (m *Model) rebuildRows() {
 			rows = append(rows, row{kind: rowCreating, tree: name, label: name})
 		}
 	}
-	if len(reviews) > 0 {
+	if len(reviews) > 0 || len(creatingRev) > 0 {
 		rows = append(rows, row{kind: rowDivider}, row{kind: rowHeader, label: reviewsHeaderLabel})
 		for _, inst := range reviews {
 			rows = m.appendTree(rows, inst)
 		}
+		for _, name := range creatingRev {
+			rows = append(rows, row{kind: rowCreating, tree: name, label: name})
+		}
 	}
-	if len(wip) == 0 && len(reviews) == 0 && len(creating) == 0 {
+	if len(wip) == 0 && len(reviews) == 0 && len(creating) == 0 && len(creatingRev) == 0 {
 		rows = append(rows, row{kind: rowDivider})
 	}
 	m.rows = rows
 	m.clampCursor()
+}
+
+// pendingCreates is the subset of names being created whose tree has not
+// landed on disk yet: the real row replaces the placeholder as soon as it does.
+func (m *Model) pendingCreates(names []string) []string {
+	var out []string
+	for _, name := range names {
+		if m.instance(name) == nil {
+			out = append(out, name)
+		}
+	}
+	return out
 }
 
 // appendTree adds one supatree's rows: its own, then (unless folded) its agents

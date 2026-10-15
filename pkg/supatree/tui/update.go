@@ -1,12 +1,14 @@
 package tui
 
 import (
+	"errors"
 	"fmt"
 	"math"
 	"os"
 	"slices"
 	"strings"
 	"time"
+	"unicode"
 
 	tea "github.com/charmbracelet/bubbletea"
 
@@ -74,7 +76,9 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.msg = msg.msg
 		m.err = msg.err
 		if msg.settled != "" {
-			m.creating = slices.DeleteFunc(m.creating, func(n string) bool { return n == msg.settled })
+			settled := func(n string) bool { return n == msg.settled }
+			m.creating = slices.DeleteFunc(m.creating, settled)
+			m.creatingRev = slices.DeleteFunc(m.creatingRev, settled)
 		}
 		m.reloadWithSelection()
 		if msg.reveal != "" {
@@ -276,18 +280,23 @@ func (m *Model) updateNormal(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.input.Placeholder = "agent name"
 			m.input.Focus()
 		}
-	case "n":
+	case "n", "N":
+		// N is the same flow with one more step: the pull requests to review,
+		// asked for once the stack is known and before the name.
+		m.reviewing = msg.String() == "N"
+		m.reviewPRs = nil
 		m.actionStack = ""
 		m.input.SetValue("")
 		m.inputErr = nil
-		if len(m.stCfg.Stacks) > 1 {
+		switch {
+		case len(m.stCfg.Stacks) > 1:
 			// Ambiguous: pick the stack from a list first, then name the tree.
 			m.mode = modeNewTree
 			m.stackCursor = 0
-		} else {
-			m.mode = modeNewTreeName
-			m.input.Placeholder = "name (blank = auto)"
-			m.input.Focus()
+		case m.reviewing:
+			m.promptReviewPRs()
+		default:
+			m.promptTreeName()
 		}
 	case "s":
 		if r := m.selectedInTree(); r != nil {
@@ -375,11 +384,22 @@ func (m *Model) updateInput(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case "esc":
 		m.mode = modeNormal
 		m.inputErr = nil
+		m.reviewing = false
+		m.reviewPRs = nil
 		m.input.Blur()
 		return m, nil
 	case "enter":
 		val := m.input.Value()
 		switch m.mode {
+		case modeNewReviewPRs:
+			prs, err := parsePRTokens(val)
+			if err != nil {
+				m.inputErr = err
+				return m, nil
+			}
+			m.reviewPRs = prs
+			m.promptTreeName()
+			return m, nil
 		case modeNewAgent:
 			tree := m.actionTree
 			m.mode = modeNormal
@@ -414,6 +434,12 @@ func (m *Model) updateInput(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.mode = modeNormal
 			m.inputErr = nil
 			m.input.Blur()
+			if m.reviewing {
+				prs := m.reviewPRs
+				m.reviewing = false
+				m.reviewPRs = nil
+				return m, m.startNewReview(stack, val, prs)
+			}
 			return m, m.startNewTree(stack, val)
 		case modeNewStackName:
 			if err := m.validateStackName(val); err != nil {
@@ -439,6 +465,13 @@ func (m *Model) updateInput(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			// field: it appears the moment the name goes bad and is gone again by
 			// the time the offending character has been deleted.
 			m.inputErr = m.validateTreeName(m.input.Value())
+		case modeNewReviewPRs:
+			// An empty field is not an error yet — it is where everyone starts.
+			if v := m.input.Value(); strings.TrimSpace(v) != "" {
+				_, m.inputErr = parsePRTokens(v)
+			} else {
+				m.inputErr = nil
+			}
 		case modeNewStackName:
 			if v := m.input.Value(); v != "" {
 				m.inputErr = m.validateStackName(v)
@@ -467,14 +500,55 @@ func (m *Model) validateTreeName(name string) error {
 	if name == "" {
 		return nil
 	}
-	existing := make([]string, 0, len(m.insts)+len(m.creating))
+	return git.ValidateName(name, m.takenNames())
+}
+
+// takenNames lists every supatree name in use: the trees on disk as last read,
+// and those this sidebar is still creating. A tree still being created is taken
+// too: a second one of the same name would fail, and its settling would clear
+// the first one's placeholder.
+func (m *Model) takenNames() []string {
+	names := make([]string, 0, len(m.insts)+len(m.creating)+len(m.creatingRev))
 	for _, inst := range m.insts {
-		existing = append(existing, inst.Name)
+		names = append(names, inst.Name)
 	}
-	// A tree still being created is taken too: a second one of the same name
-	// would fail, and its settling would clear the first one's placeholder.
-	existing = append(existing, m.creating...)
-	return git.ValidateName(name, existing)
+	names = append(names, m.creating...)
+	return append(names, m.creatingRev...)
+}
+
+// parsePRTokens splits what was typed at the review prompt into pull request
+// references — separated by spaces or commas, since a pasted list carries
+// either — and checks the form of each. Only the form: whether the PR exists
+// is a gh call, which belongs in the create command, not on every keystroke.
+func parsePRTokens(s string) ([]string, error) {
+	toks := strings.FieldsFunc(s, func(r rune) bool { return r == ',' || unicode.IsSpace(r) })
+	if len(toks) == 0 {
+		return nil, errors.New("give at least one pull request")
+	}
+	for _, t := range toks {
+		if _, _, err := supatree.ParsePRRef(t); err != nil {
+			return nil, err
+		}
+	}
+	return toks, nil
+}
+
+// promptTreeName opens the name prompt that ends both new-tree flows.
+func (m *Model) promptTreeName() {
+	m.mode = modeNewTreeName
+	m.input.SetValue("")
+	m.inputErr = nil
+	m.input.Placeholder = "name (blank = auto)"
+	m.input.Focus()
+}
+
+// promptReviewPRs opens the prompt for the pull requests a review tree checks out.
+func (m *Model) promptReviewPRs() {
+	m.mode = modeNewReviewPRs
+	m.input.SetValue("")
+	m.inputErr = nil
+	m.input.Placeholder = "PR URLs or owner/repo#n"
+	m.input.Focus()
 }
 
 // inRepos reports whether a row kind sits inside a supatree's repositories
@@ -491,6 +565,7 @@ func (m *Model) updateStackPick(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	switch msg.String() {
 	case "esc", "q":
 		m.mode = modeNormal
+		m.reviewing = false
 	case "up", "k":
 		if m.stackCursor > 0 {
 			m.stackCursor--
@@ -501,11 +576,11 @@ func (m *Model) updateStackPick(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 	case "enter":
 		m.actionStack = m.stCfg.Stacks[m.stackCursor].Alias
-		m.mode = modeNewTreeName
-		m.input.SetValue("")
-		m.inputErr = nil
-		m.input.Placeholder = "name (blank = auto)"
-		m.input.Focus()
+		if m.reviewing {
+			m.promptReviewPRs()
+		} else {
+			m.promptTreeName()
+		}
 	}
 	return m, nil
 }
@@ -838,20 +913,38 @@ func (m *Model) validatePMName(name string) error {
 // it is done. A blank name is filled here rather than by the creator, so the
 // placeholder can carry the name the tree will have.
 func (m *Model) startNewTree(stack, name string) tea.Cmd {
+	name, ok := m.listCreating(&m.creating, name)
+	if !ok {
+		return nil
+	}
+	m.msg = "creating " + name + "…"
+	return m.newTree(stack, name)
+}
+
+// startNewReview lists the review tree as being created, under Reviews, and
+// starts creating it from the pull requests given at the prompt.
+func (m *Model) startNewReview(stack, name string, prs []string) tea.Cmd {
+	name, ok := m.listCreating(&m.creatingRev, name)
+	if !ok {
+		return nil
+	}
+	m.msg = "creating review " + name + "…"
+	return m.newReview(stack, name, prs)
+}
+
+// listCreating names the tree (generating one for a blank name), adds its
+// placeholder to list and rebuilds the rows around it. It reports false, with
+// m.err set, when no name could be generated.
+func (m *Model) listCreating(list *[]string, name string) (string, bool) {
 	if name == "" {
-		existing := make([]string, 0, len(m.insts)+len(m.creating))
-		for _, inst := range m.insts {
-			existing = append(existing, inst.Name)
-		}
-		existing = append(existing, m.creating...)
-		generated, err := git.GenerateName(existing)
+		generated, err := git.GenerateName(m.takenNames())
 		if err != nil {
 			m.err = err
-			return nil
+			return "", false
 		}
 		name = generated
 	}
-	m.creating = append(m.creating, name)
+	*list = append(*list, name)
 	// The placeholder (and, for the first tree, the WIP heading) can land above
 	// the cursor — in front of the Reviews section — so keep it on its row.
 	var want *row
@@ -863,8 +956,7 @@ func (m *Model) startNewTree(stack, name string) tea.Cmd {
 	if want != nil {
 		m.selectRow(*want)
 	}
-	m.msg = "creating " + name + "…"
-	return m.newTree(stack, name)
+	return name, true
 }
 
 func (m *Model) newTree(stack, name string) tea.Cmd {
@@ -874,6 +966,26 @@ func (m *Model) newTree(stack, name string) tea.Cmd {
 			return actionDoneMsg{err: err, settled: name}
 		}
 		return actionDoneMsg{msg: "created " + inst.Name, reveal: inst.Name, settled: name}
+	}
+}
+
+// newReview resolves the pull requests (one gh call each, so never on the main
+// loop) and creates the review tree from them.
+func (m *Model) newReview(stack, name string, prs []string) tea.Cmd {
+	return func() tea.Msg {
+		refs, err := supatree.ResolvePRRefs(prs)
+		if err != nil {
+			return actionDoneMsg{err: err, settled: name}
+		}
+		inst, report, err := supatree.NewReview(m.stCfg, supatree.ReviewOptions{Stack: stack, Name: name, PRs: refs})
+		if err != nil {
+			return actionDoneMsg{err: err, settled: name}
+		}
+		msg := "created review " + inst.Name
+		if report != nil && len(report.Warnings) > 0 {
+			msg += " — warning: " + strings.Join(report.Warnings, "; ")
+		}
+		return actionDoneMsg{msg: msg, reveal: inst.Name, settled: name}
 	}
 }
 

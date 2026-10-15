@@ -7,6 +7,7 @@ import (
 	"unicode/utf8"
 
 	"github.com/charmbracelet/lipgloss"
+	"github.com/charmbracelet/x/ansi"
 
 	"github.com/panamafrancis/supatree/pkg/supatree"
 	"github.com/panamafrancis/workbench/pkg/github"
@@ -26,7 +27,7 @@ func (m *Model) View() string {
 	}
 
 	footer := m.footer()
-	if len(m.insts) == 0 && len(m.creating) == 0 {
+	if len(m.insts) == 0 && len(m.creating) == 0 && len(m.creatingRev) == 0 {
 		// The PM section is still there with no supatrees — it is reachable (and
 		// can create one) before anything else exists.
 		for i, r := range m.rows {
@@ -251,13 +252,43 @@ func (m *Model) prCounts(tree string) string {
 	return strings.Join(parts, " ")
 }
 
+// newTreeLabel names the new-tree flow in progress in its prompts: n and N
+// share the stack picker and the name prompt.
+func (m *Model) newTreeLabel() string {
+	if m.reviewing {
+		return "new review"
+	}
+	return "new supatree"
+}
+
+// inputPrompt renders a text prompt: the label and what has been typed so far,
+// folded to the pane, with any live validation complaint underneath.
+//
+// The fold is a hard one, character by character, the way a shell prompt
+// wraps — what is typed is usually one long token (a URL, a name), so there is
+// no word boundary to wait for, and a line left unfolded is clipped at the pane
+// edge, cursor and all. It must be ANSI-aware: the input's view carries the
+// cursor's escape codes, which wrapText would count as text and split.
+func (m *Model) inputPrompt(label string) string {
+	prompt := label + m.input.View()
+	if m.width > 0 {
+		prompt = ansi.Hardwrap(prompt, m.width, true)
+	}
+	if m.inputErr != nil {
+		// Live validation: the complaint sits under the field the user is
+		// still typing in, and goes away with the character that caused it.
+		prompt += "\n" + styleDirty.Render(wrapText(m.inputErr.Error(), m.width))
+	}
+	return prompt
+}
+
 func (m *Model) footer() string {
 	switch m.mode {
 	case modeNewAgent:
-		return "new agent: " + m.input.View()
+		return m.inputPrompt("new agent: ")
 	case modeNewTree:
 		var b strings.Builder
-		b.WriteString(styleSub.Render(wrapText("new supatree — pick stack (↑/↓, enter, esc):", m.width)))
+		b.WriteString(styleSub.Render(wrapText(m.newTreeLabel()+" — pick stack (↑/↓, enter, esc):", m.width)))
 		for i, s := range m.stCfg.Stacks {
 			b.WriteString("\n")
 			if i == m.stackCursor {
@@ -268,27 +299,15 @@ func (m *Model) footer() string {
 		}
 		return b.String()
 	case modeNewTreeName:
-		prompt := "new supatree — name: " + m.input.View()
-		if m.inputErr != nil {
-			// Live validation: the complaint sits under the field the user is
-			// still typing in, and goes away with the character that caused it.
-			prompt += "\n" + styleDirty.Render(wrapText(m.inputErr.Error(), m.width))
-		}
-		return prompt
+		return m.inputPrompt(m.newTreeLabel() + " — name: ")
+	case modeNewReviewPRs:
+		return m.inputPrompt("new review — PRs: ")
 	case modeNewStackName:
-		prompt := "new stack — name: " + m.input.View()
-		if m.inputErr != nil {
-			prompt += "\n" + styleDirty.Render(wrapText(m.inputErr.Error(), m.width))
-		}
-		return prompt
+		return m.inputPrompt("new stack — name: ")
 	case modeConfirmDelete:
 		return styleDirty.Render(wrapText(fmt.Sprintf("delete %q? [y/N]", m.actionTree), m.width))
 	case modeNewPM:
-		prompt := "new PM — name: " + m.input.View()
-		if m.inputErr != nil {
-			prompt += "\n" + styleDirty.Render(wrapText(m.inputErr.Error(), m.width))
-		}
-		return prompt
+		return m.inputPrompt("new PM — name: ")
 	case modeConfirmDeletePM:
 		return styleDirty.Render(wrapText(fmt.Sprintf("remove PM %q? [y/N]", m.actionPM), m.width))
 	case modeConfirmDeleteAgent:
@@ -320,7 +339,7 @@ func (m *Model) footer() string {
 	}
 	// The motions moved into `?` — the footer keeps the actions, which are the
 	// ones that are not guessable from vim habits.
-	parts := []string{openHint, "space fold", "a agent", "p PM", "n new", "s sync", "d del", "D dash", "r refresh", "? help", "q quit"}
+	parts := []string{openHint, "space fold", "a agent", "p PM", "n new", "N review", "s sync", "d del", "D dash", "r refresh", "? help", "q quit"}
 	if m.prHint != "" {
 		parts = append(parts, "("+m.prHint+")")
 	}
@@ -581,6 +600,7 @@ func helpLines() []string {
 		"",
 		styleHeader.Render("Supatrees"),
 		"  n        new supatree",
+		"  N        new review tree from PR URLs",
 		"  s        sync members",
 		"  S        new stack",
 		"",

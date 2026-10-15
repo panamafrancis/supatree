@@ -10,6 +10,7 @@ import (
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
+	"github.com/charmbracelet/x/ansi"
 
 	"github.com/panamafrancis/supatree/pkg/supatree"
 	"github.com/panamafrancis/workbench/pkg/github"
@@ -128,6 +129,145 @@ func TestNewTreeMultiStackAsksForStackThenName(t *testing.T) {
 	}
 	if m.actionStack != "b" {
 		t.Errorf("actionStack = %q, want %q", m.actionStack, "b")
+	}
+}
+
+// N is n with one more step: the pull requests, asked for after the stack and
+// before the name. With one stack it goes straight to them.
+func TestNewReviewSingleStackAsksForPRsThenName(t *testing.T) {
+	testutil.IsolateHome(t)
+	cfg := supatree.DefaultConfig()
+	cfg.Stacks = []supatree.Stack{{Alias: "only", Path: "/tmp/only"}}
+	m := New(cfg, zellij.Workspace{})
+
+	m.updateNormal(key("N"))
+	if m.mode != modeNewReviewPRs {
+		t.Fatalf("N: mode = %v, want modeNewReviewPRs", m.mode)
+	}
+	// Empty: the prompt stays open and starts nothing.
+	if _, cmd := m.Update(key("enter")); cmd != nil || m.mode != modeNewReviewPRs {
+		t.Fatalf("enter on no PRs: mode = %v, cmd = %v, want the prompt still open", m.mode, cmd)
+	}
+	m.input.SetValue("https://github.com/o/a/pull/7/files, o/b#12")
+	m.Update(key("enter"))
+	if m.mode != modeNewTreeName {
+		t.Fatalf("after PRs: mode = %v, want modeNewTreeName", m.mode)
+	}
+	if want := []string{"https://github.com/o/a/pull/7/files", "o/b#12"}; !slices.Equal(m.reviewPRs, want) {
+		t.Errorf("reviewPRs = %q, want %q", m.reviewPRs, want)
+	}
+	if !strings.Contains(m.footer(), "new review") {
+		t.Errorf("name prompt %q does not say it is a review", m.footer())
+	}
+}
+
+func TestNewReviewMultiStackAsksForStackThenPRs(t *testing.T) {
+	testutil.IsolateHome(t)
+	cfg := supatree.DefaultConfig()
+	cfg.Stacks = []supatree.Stack{{Alias: "a", Path: "/tmp/a"}, {Alias: "b", Path: "/tmp/b"}}
+	m := New(cfg, zellij.Workspace{})
+
+	m.updateNormal(key("N"))
+	if m.mode != modeNewTree {
+		t.Fatalf("N: mode = %v, want modeNewTree", m.mode)
+	}
+	m.updateInput(key("j"))
+	m.updateInput(key("enter"))
+	if m.mode != modeNewReviewPRs {
+		t.Fatalf("after stack: mode = %v, want modeNewReviewPRs", m.mode)
+	}
+	if m.actionStack != "b" {
+		t.Errorf("actionStack = %q, want %q", m.actionStack, "b")
+	}
+
+	// Cancelling and pressing n starts an ordinary tree, not a review.
+	m.Update(key("esc"))
+	m.updateNormal(key("n"))
+	m.updateInput(key("enter"))
+	if m.mode != modeNewTreeName || m.reviewing {
+		t.Fatalf("n after N: mode = %v, reviewing = %v, want an authoring name prompt", m.mode, m.reviewing)
+	}
+}
+
+// A prompt folds what is typed to the pane rather than running it off the edge:
+// in a narrow sidebar a pasted URL was clipped, cursor and all.
+func TestPromptInputWrapsToPaneWidth(t *testing.T) {
+	testutil.IsolateHome(t)
+	m := New(supatree.DefaultConfig(), zellij.Workspace{})
+	m.width = 20
+
+	m.updateNormal(key("N"))
+	const typed = "https://github.com/owner/repo/pull/12345"
+	m.input.SetValue(typed)
+	footer := m.footer()
+
+	lines := strings.Split(footer, "\n")
+	if len(lines) < 3 {
+		t.Fatalf("footer did not wrap: %q", footer)
+	}
+	for _, l := range lines {
+		if w := lipgloss.Width(l); w > m.width {
+			t.Errorf("line %q is %d wide, pane is %d", ansi.Strip(l), w, m.width)
+		}
+	}
+	if joined := ansi.Strip(strings.Join(lines, "")); !strings.Contains(joined, typed) {
+		t.Errorf("wrapped prompt %q lost some of %q", joined, typed)
+	}
+}
+
+// A malformed reference is reported as it is typed and enter will not pass it.
+func TestNewReviewRejectsMalformedPR(t *testing.T) {
+	testutil.IsolateHome(t)
+	m := New(supatree.DefaultConfig(), zellij.Workspace{})
+
+	m.updateNormal(key("N"))
+	for _, r := range "o/a#7 nope" {
+		m.Update(key(string(r)))
+	}
+	if m.inputErr == nil {
+		t.Fatal("a malformed PR raised no warning")
+	}
+	if _, cmd := m.Update(key("enter")); cmd != nil || m.mode != modeNewReviewPRs {
+		t.Fatalf("enter on a malformed PR: mode = %v, cmd = %v, want the prompt still open", m.mode, cmd)
+	}
+	m.Update(key("esc"))
+	if m.mode != modeNormal || m.reviewing || m.reviewPRs != nil {
+		t.Errorf("esc: mode = %v, reviewing = %v, reviewPRs = %q, want a clean normal mode", m.mode, m.reviewing, m.reviewPRs)
+	}
+}
+
+// A review being created is listed under Reviews, not WIP, and its name is
+// taken until it lands.
+func TestNewReviewPlaceholderUnderReviews(t *testing.T) {
+	testutil.IsolateHome(t)
+	m := New(supatree.DefaultConfig(), zellij.Workspace{})
+
+	if cmd := m.startNewReview("", "lima", []string{"o/a#1"}); cmd == nil {
+		t.Fatal("startNewReview returned no command")
+	}
+	section := ""
+	found := false
+	for _, r := range m.rows {
+		if r.kind == rowHeader {
+			section = r.label
+		}
+		if r.kind == rowCreating && r.tree == "lima" {
+			found = true
+			if section != reviewsHeaderLabel {
+				t.Errorf("placeholder under %q, want %q", section, reviewsHeaderLabel)
+			}
+		}
+	}
+	if !found {
+		t.Fatal("no placeholder row for the review being created")
+	}
+	if m.validateTreeName("lima") == nil {
+		t.Error("the name of a review being created is not taken")
+	}
+
+	m.Update(actionDoneMsg{settled: "lima"})
+	if len(m.creatingRev) != 0 {
+		t.Errorf("creatingRev = %q after settling, want empty", m.creatingRev)
 	}
 }
 
