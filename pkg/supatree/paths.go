@@ -228,6 +228,14 @@ func NotifyStatePath() string {
 	return filepath.Join(CacheDir(), "notify-state.json")
 }
 
+// PMNudgeStatePath records, per PM, the queue position of the newest request
+// the watcher has already nudged it about. It is in the cache rather than PMDir
+// so the PM's sandbox cannot write it, and it is disposable: losing it costs one
+// extra nudge.
+func PMNudgeStatePath() string {
+	return filepath.Join(CacheDir(), "pm-nudge.json")
+}
+
 // WatchLockPath elects the single watcher process. It is held for the whole
 // life of the daemon, so a concurrent `watch --once` gets ErrLockBusy and
 // exits quietly — that is what stops a cron entry double-fetching.

@@ -68,7 +68,7 @@ var watchCmd = &cobra.Command{
 func runWatch(ctx context.Context) error {
 	if watchOnce {
 		runOps()
-		forwardPMMail()
+		pmMailTick()
 		return watchRound(ctx)
 	}
 
@@ -96,7 +96,7 @@ func runWatch(ctx context.Context) error {
 		case <-ctx.Done():
 			return nil
 		case <-launchTicker.C:
-			forwardPMMail()
+			pmMailTick()
 			runLaunches(ctx)
 		case <-ticker.C:
 			// The daemon is spawned by `supatree start` and outlives its parent
@@ -169,23 +169,32 @@ func watchRound(ctx context.Context) error {
 	return nil
 }
 
-// forwardPMMail moves tree agents' messages for a PM into the request queue.
-// It runs on the fast launch tick, not in watchRound: a round is a GitHub fetch
-// that can take seconds and returns early on a ledger error, and a reply that
-// waits on either is a reply the PM reports as never sent.
-func forwardPMMail() {
+// pmMailTick moves tree agents' messages for a PM into the request queue and,
+// with pm_nudge on, nudges each PM that has new requests. It runs on the fast
+// launch tick, not in watchRound: a round is a GitHub fetch that can take
+// seconds and returns early on a ledger error, and a reply that waits on either
+// is a reply the PM reports as never sent. Forwarding first means a reply
+// forwarded now is nudged now.
+func pmMailTick() {
 	cfg, err := supatree.Load()
 	if err != nil {
 		logWatch("forward PM mail: load config: %v", err)
 		return
 	}
-	insts, err := supatree.List(cfg)
-	if err != nil {
+	if insts, err := supatree.List(cfg); err != nil {
 		logWatch("forward PM mail: %v", err)
+	} else if _, err := supatree.ForwardPMMail(insts); err != nil {
+		logWatch("forward PM mail: %v", err)
+	}
+	if !cfg.PMNudge {
 		return
 	}
-	if _, err := supatree.ForwardPMMail(insts); err != nil {
-		logWatch("forward PM mail: %v", err)
+	nudged, err := supatree.NudgePMs()
+	for _, name := range nudged {
+		logWatch("nudged PM %s", name)
+	}
+	if err != nil {
+		logWatch("nudge PMs: %v", err)
 	}
 }
 

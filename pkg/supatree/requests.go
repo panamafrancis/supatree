@@ -75,17 +75,36 @@ func PendingRequests(pm string) ([]Request, int64, error) {
 		}
 		me = *p
 	}
-	all, offset, err := readRequestsFrom(loadOffsetAt(me.OffsetPath()))
+	all, offset, err := readQueueFrom(loadOffsetAt(me.OffsetPath()))
 	if err != nil {
 		return nil, 0, err
 	}
 	var out []Request
-	for _, r := range all {
-		if requestFor(r, me, pms) {
-			out = append(out, r)
+	for _, q := range all {
+		if requestFor(q.Request, me, pms) {
+			out = append(out, q.Request)
 		}
 	}
 	return out, offset, nil
+}
+
+// pendingRequestsEnd counts the requests the named PM has not yet read and
+// returns the byte offset just past the newest of them: an exact identity for
+// "the latest mail", unlike its At, which a forwarded message carries over from
+// whoever wrote it.
+func pendingRequestsEnd(pm PM, pms []PM) (int, int64, error) {
+	all, _, err := readQueueFrom(loadOffsetAt(pm.OffsetPath()))
+	if err != nil {
+		return 0, 0, err
+	}
+	n, end := 0, int64(0)
+	for _, q := range all {
+		if requestFor(q.Request, pm, pms) {
+			n++
+			end = q.End
+		}
+	}
+	return n, end, nil
 }
 
 // requestFor reports whether r is me's to read.
@@ -97,7 +116,13 @@ func requestFor(r Request, me PM, pms []PM) bool {
 	return top && (r.To == "" || FindPM(pms, r.To) == nil)
 }
 
-func readRequestsFrom(off readOffset) ([]Request, int64, error) {
+// queuedRequest is a request with the byte offset just past its line.
+type queuedRequest struct {
+	Request
+	End int64
+}
+
+func readQueueFrom(off readOffset) ([]queuedRequest, int64, error) {
 	f, err := os.Open(RequestsPath())
 	if os.IsNotExist(err) {
 		return nil, 0, nil
@@ -123,7 +148,7 @@ func readRequestsFrom(off readOffset) ([]Request, int64, error) {
 		return nil, 0, fmt.Errorf("seek requests: %w", err)
 	}
 
-	var out []Request
+	var out []queuedRequest
 	pos := start
 	sc := bufio.NewScanner(f)
 	sc.Buffer(make([]byte, 0, 64*1024), 1024*1024)
@@ -138,7 +163,7 @@ func readRequestsFrom(off readOffset) ([]Request, int64, error) {
 			// A torn line costs that line, not the backlog behind it.
 			continue
 		}
-		out = append(out, r)
+		out = append(out, queuedRequest{Request: r, End: pos})
 	}
 	if err := sc.Err(); err != nil {
 		return nil, 0, fmt.Errorf("read requests: %w", err)

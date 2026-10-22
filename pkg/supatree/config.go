@@ -58,6 +58,10 @@ type Config struct {
 	// authoring verb is refused, has no second use for the permission to
 	// withhold. A tree's own `outward` still overrides it.
 	ReviewOutward *bool `yaml:"review_outward,omitempty"`
+	// PMNudge lets the watcher type PMNudgeText into a running PM's prompt when
+	// a request arrives for it. Off by default: the text lands wherever the
+	// prompt is, including in the middle of something you are typing there.
+	PMNudge bool `yaml:"pm_nudge,omitempty"`
 	// Models is supatree's own open map of launchable models — the same shape
 	// as workbench's, never read from it. Empty means the built-in defaults.
 	Models map[string]config.Model `yaml:"models,omitempty"`

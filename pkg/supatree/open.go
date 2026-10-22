@@ -337,7 +337,7 @@ func wakeAgent(root, tab, agent string) LaunchOutcome {
 	if !HasMail(root, agent) {
 		return LaunchRunning
 	}
-	pane, ok, err := zellij.AgentPane("", tab)
+	pane, ok, err := AgentPane("", tab)
 	if err != nil || !ok {
 		return LaunchRunning
 	}

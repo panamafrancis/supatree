@@ -174,6 +174,13 @@ pm_model: claude-pm     # a models entry whose nono_profile scopes the gh creden
 
 **Reaching it.** Anything that can append to a file can queue a request — `supatree request`, the sidebar, the watcher — and the PM reads the queue at the top of each turn. That indirection is the point: a Go process cannot use a message bus, but every Go process can append a line. The queue is read from a **stored offset**, so a PM that has been closed for a day catches up on the backlog instead of losing it, and the offset is only committed after the requests have been handed over.
 
+**Nudging it.** An idle PM takes no turn, so a new request can sit unread until you next talk to it. With `pm_nudge: true` (default: off), the watcher types a fixed line — "You have new requests. Call the `requests` tool and act on them." — into a running PM's prompt when a request arrives for it. A request never causes more than one nudge. It never types into a pane it cannot be sure is the PM. It types even while the PM's tab is the one on screen, since zellij cannot tell a tab you are reading from one left open in a terminal you are not looking at — which is why it is off by default: the line lands wherever the prompt is, including the middle of something you are typing there.
+
+```yaml
+# ~/.config/supatree/config.yml
+pm_nudge: true
+```
+
 **Two rules it is given up front.** It never opens a Zellij tab unprompted — opening focuses the tab and yanks the terminal away from whoever is using it, so it creates trees and *reports*, and you press enter yourself. And it treats fetched text as data rather than instructions: a PR comment is written by anyone who can comment on the repository.
 
 It also cannot notify you directly — nothing inside the sandbox can — so its `notify` tool queues through the watcher, which applies the same tiering and deduping as its own events.
