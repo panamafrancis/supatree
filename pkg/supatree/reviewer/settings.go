@@ -55,9 +55,18 @@ var ErrDisabled = errors.New("reviewer is not enabled")
 
 // Resolve reads the reviewer settings out of the config.
 func Resolve(c *supatree.Config) (Settings, error) {
-	r := c.Reviewer
-	if r == nil || !r.Enabled {
+	if c.Reviewer == nil || !c.Reviewer.Enabled {
 		return Settings{}, ErrDisabled
+	}
+	return ResolveConfigured(c)
+}
+
+// ResolveConfigured reads the reviewer settings whether or not the reviewer
+// is enabled, for a dry run of one that is not switched on yet.
+func ResolveConfigured(c *supatree.Config) (Settings, error) {
+	r := c.Reviewer
+	if r == nil {
+		return Settings{}, errors.New("no reviewer: block in the config")
 	}
 	if r.Login == "" {
 		return Settings{}, errors.New("reviewer.login is not set: name the GitHub account reviews are posted as")

@@ -96,15 +96,29 @@ func (r *Reviewer) Round(ctx context.Context, cfg *supatree.Config, cache *githu
 	}
 }
 
-// SnapshotFor is what Plan would see now. For `supatree reviewer status`.
+// SnapshotFor is what Plan would see now, with the reviewer configured but
+// not necessarily enabled. For `supatree reviewer status` and `plan`.
 func SnapshotFor(cfg *supatree.Config, cache *github.Cache) (Snapshot, Settings, error) {
-	s, err := Resolve(cfg)
+	s, err := ResolveConfigured(cfg)
 	if err != nil {
 		return Snapshot{}, s, err
 	}
 	r := &Reviewer{}
 	snap, err := r.snapshot(cfg, s, cache)
 	return snap, s, err
+}
+
+// CheckLogin reports whether gh is authenticated as login.
+func CheckLogin(login string) error {
+	return (&Reviewer{}).checkIdentity(login)
+}
+
+// RelatedFor is the LLM grouping pass the settings ask for, or nil.
+func RelatedFor(cfg *supatree.Config, s Settings, logf func(string, ...any)) Related {
+	if !s.LLMGrouping {
+		return nil
+	}
+	return llmGrouper(cfg, s, logf)
 }
 
 func (r *Reviewer) snapshot(cfg *supatree.Config, s Settings, cache *github.Cache) (Snapshot, error) {

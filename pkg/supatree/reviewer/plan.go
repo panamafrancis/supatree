@@ -58,12 +58,7 @@ func Plan(snap Snapshot, st *State, s Settings, related Related) []Action {
 	now := snap.Now
 	observe(snap, st, s.Login)
 
-	inTree := map[string]string{}
-	for _, name := range sortedKeys(snap.Trees) {
-		for _, k := range snap.Trees[name].PRs {
-			inTree[k] = name
-		}
-	}
+	inTree := treeIndex(snap)
 	for name := range st.Trees {
 		if snap.Trees[name] == nil {
 			delete(st.Trees, name)
@@ -191,20 +186,10 @@ func backoff(attempts int) time.Duration {
 // with their siblings, and decides whether each group joins an existing tree
 // or gets one of its own.
 func planGroups(snap Snapshot, st *State, s Settings, related Related, inTree map[string]string) []Action {
-	open := map[string]*PR{}
-	for k, p := range snap.PRs {
-		if p.Open() {
-			open[k] = p
-		}
-	}
+	g, open := buildGroups(snap, st, related, inTree)
 	// A tree is made for, or joined by, a pull request that may run now: one
 	// whose last create failed waits out the same backoff a failed run does.
 	isWaiting := func(k string) bool { return eligible(st.PRs[k], snap.Now) }
-
-	g := groupDeterministic(open)
-	if related != nil {
-		applyRelated(g, open, related, func(k string) bool { return isWaiting(k) && inTree[k] == "" })
-	}
 
 	var actions []Action
 	for _, comp := range g.components() {
@@ -256,6 +241,33 @@ func planGroups(snap Snapshot, st *State, s Settings, related Related, inTree ma
 		actions = append(actions, Action{Kind: ActCreate, Stack: open[unassigned[0]].Stack, PRs: unassigned})
 	}
 	return actions
+}
+
+// buildGroups groups the open pull requests: the deterministic evidence,
+// then related's proposals for the waiting ones no tree holds.
+func buildGroups(snap Snapshot, st *State, related Related, inTree map[string]string) (*groups, map[string]*PR) {
+	open := map[string]*PR{}
+	for k, p := range snap.PRs {
+		if p.Open() {
+			open[k] = p
+		}
+	}
+	g := groupDeterministic(open)
+	if related != nil {
+		applyRelated(g, open, related, func(k string) bool { return eligible(st.PRs[k], snap.Now) && inTree[k] == "" })
+	}
+	return g, open
+}
+
+// treeIndex maps each pull request in one of the snapshot's trees to it.
+func treeIndex(snap Snapshot) map[string]string {
+	inTree := map[string]string{}
+	for _, name := range sortedKeys(snap.Trees) {
+		for _, k := range snap.Trees[name].PRs {
+			inTree[k] = name
+		}
+	}
+	return inTree
 }
 
 // fitTree splits ks into those tree has room for — its member for their

@@ -142,7 +142,17 @@ Remember to set `XDG_*`. Supatree reads them before `HOME`, so a value exported 
 
 `--headless` means the watcher needs no zellij session and never exits for want of one. To run it unattended, use launchd, systemd or `nohup`. A second `supatree watch` in the same home exits quietly, so starting it from cron every few minutes is a valid way to keep it alive.
 
-Check on it with:
+Before switching it on, try the configuration with `enabled: false`:
+
+```sh
+supatree reviewer plan     # dry run: refreshes the listings, shows what it would do, does none of it
+```
+
+`plan` checks that gh is logged in as `reviewer.login`, polls the watched repositories, and prints the actions a round would take and how it groups the open pull requests into changes. It creates nothing, posts nothing and records nothing, so a request it sees for the first time is always still in its `group_window`; the output says when that group's tree would be made.
+
+The reviewer watches **the repositories your stack names**. If your stack points at forks while pull requests are opened against the upstream repositories, it will see none of them; the stack has to name the repositories pull requests target.
+
+Once it is enabled, check on it with:
 
 ```sh
 supatree reviewer status
@@ -210,6 +220,7 @@ The environment only seeds `config.yml` on first start. After that, the file on 
 ## Monitoring and operating it
 
 ```sh
+supatree reviewer plan              # dry run: what it would do now, and how it groups the open pull requests
 supatree reviewer status            # every watched pull request: state, tree, last verdict, failures
 supatree reviewer forget acme/api#42 # clear what it remembers about one pull request (failures, give-up)
 supatree ls                          # the reviewer's trees are listed under Reviews, named rv-<repo>-<n>

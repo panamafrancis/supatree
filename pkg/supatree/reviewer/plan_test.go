@@ -15,6 +15,9 @@ const (
 	bot   = "review-bot"
 	apiPR = "o/api#1"
 	webPR = "o/web#2"
+	// The supatree branches of one change, x.
+	apiBranch = "st/x/api"
+	webBranch = "st/x/web"
 )
 
 var t0 = time.Date(2026, 10, 1, 12, 0, 0, 0, time.UTC)
@@ -117,9 +120,9 @@ func TestGroupDeterministic(t *testing.T) {
 			// repo split rather than merge, the first union winning.
 			"two in one repo",
 			[]*PR{
-				pr("o/api", 1, func(p *PR) { p.HeadRef = "st/x/api" }),
+				pr("o/api", 1, func(p *PR) { p.HeadRef = apiBranch }),
 				pr("o/api", 3, func(p *PR) { p.HeadRef = "st/x/api2" }),
-				pr("o/web", 2, func(p *PR) { p.HeadRef = "st/x/web" }),
+				pr("o/web", 2, func(p *PR) { p.HeadRef = webBranch }),
 			},
 			[][]string{{apiPR, webPR}, {"o/api#3"}},
 		},
@@ -150,11 +153,11 @@ func TestGroupDeterministic(t *testing.T) {
 // the window from its newest request.
 func TestPlanWaitsOutTheGroupWindow(t *testing.T) {
 	st := newState()
-	api := pr("o/api", 1, func(p *PR) { p.HeadRef = "st/x/api" })
+	api := pr("o/api", 1, func(p *PR) { p.HeadRef = apiBranch })
 	if as := Plan(snapOf(t0, api), st, settings(), nil); len(as) != 0 {
 		t.Fatalf("first sight: %v, want nothing until the window passes", kinds(as))
 	}
-	web := pr("o/web", 2, func(p *PR) { p.HeadRef = "st/x/web" })
+	web := pr("o/web", 2, func(p *PR) { p.HeadRef = webBranch })
 	if as := Plan(snapOf(t0.Add(4*time.Minute), api, web), st, settings(), nil); len(as) != 0 {
 		t.Fatalf("sibling arrived: %v, want the window restarted", kinds(as))
 	}
@@ -191,8 +194,8 @@ func TestPlanRunsAddsAndReaps(t *testing.T) {
 	t.Run("a late sibling joins the tree at once", func(t *testing.T) {
 		st := newState()
 		snap := snapOf(now,
-			pr("o/api", 1, func(p *PR) { p.HeadRef = "st/x/api"; p.Requested = false }),
-			pr("o/web", 2, func(p *PR) { p.HeadRef = "st/x/web" }))
+			pr("o/api", 1, func(p *PR) { p.HeadRef = apiBranch; p.Requested = false }),
+			pr("o/web", 2, func(p *PR) { p.HeadRef = webBranch }))
 		snap.Trees[tree.Name] = tree
 		got := kinds(Plan(snap, st, settings(), nil))
 		if !slices.Equal(got, []string{"add:rv-api-1:o/web#2"}) {
@@ -203,8 +206,8 @@ func TestPlanRunsAddsAndReaps(t *testing.T) {
 		st := newState()
 		st.PRs["o/api#3"] = &PRState{WaitingSince: t0}
 		snap := snapOf(now,
-			pr("o/api", 1, func(p *PR) { p.HeadRef = "st/x/api"; p.Requested = false }),
-			pr("o/api", 3, func(p *PR) { p.HeadRef = "st/x/api" }))
+			pr("o/api", 1, func(p *PR) { p.HeadRef = apiBranch; p.Requested = false }),
+			pr("o/api", 3, func(p *PR) { p.HeadRef = apiBranch }))
 		snap.Trees[tree.Name] = tree
 		got := kinds(Plan(snap, st, settings(), nil))
 		if !slices.Equal(got, []string{"create::o/api#3"}) {
@@ -356,5 +359,50 @@ func TestGroupsOnTheBlockCreatePRsWrites(t *testing.T) {
 	g := groupDeterministic(prs)
 	if got := g.components(); len(got) != 1 || g.reason[webPR] != ReasonMarker {
 		t.Errorf("groups = %v (reason %q), want one by the marker", got, g.reason[webPR])
+	}
+}
+
+// A dry run decides from the state but records nothing in it — not even when
+// a request was first seen — and still reports each change and when its tree
+// would be made.
+func TestDryRunRecordsNothing(t *testing.T) {
+	st := newState()
+	api := pr("o/api", 1, func(p *PR) { p.HeadRef = apiBranch })
+	web := pr("o/web", 2, func(p *PR) { p.HeadRef = webBranch })
+	other := pr("o/api", 5, func(p *PR) { p.HeadRef = "solo"; p.Requested = false })
+	p, err := DryRun(snapOf(t0, api, web, other), st, settings(), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(st.PRs) != 0 || len(st.Trees) != 0 {
+		t.Errorf("dry run wrote state: %+v", st.PRs)
+	}
+	if len(p.Actions) != 0 {
+		t.Errorf("actions = %v, want none inside the window", kinds(p.Actions))
+	}
+	if len(p.Groups) != 2 {
+		t.Fatalf("groups = %+v, want the change and the lone pull request", p.Groups)
+	}
+	change := p.Groups[0]
+	if !slices.Equal(change.PRs, []string{apiPR, webPR}) || !change.ReadyAt.Equal(t0.Add(settings().GroupWindow)) || change.Reasons[webPR] != ReasonBranch {
+		t.Errorf("change = %+v", change)
+	}
+	if lone := p.Groups[1]; len(lone.Waiting) != 0 || !lone.ReadyAt.IsZero() {
+		t.Errorf("an unrequested pull request = %+v", lone)
+	}
+}
+
+func TestDryRunAsksRelatedOnce(t *testing.T) {
+	asked := 0
+	related := func([]*PR) [][]string { asked++; return nil }
+	st := newState()
+	st.PRs[apiPR] = &PRState{WaitingSince: t0}
+	st.PRs[webPR] = &PRState{WaitingSince: t0}
+	snap := snapOf(t0.Add(time.Hour), pr("o/api", 1, func(p *PR) { p.HeadRef = "a" }), pr("o/web", 2, func(p *PR) { p.HeadRef = "b" }))
+	if _, err := DryRun(snap, st, settings(), related); err != nil {
+		t.Fatal(err)
+	}
+	if asked != 1 {
+		t.Errorf("related asked %d times, want once", asked)
 	}
 }
