@@ -75,7 +75,14 @@ type Meta struct {
 	// it has not (or the stack has none). SetupErr is how it failed, if it did.
 	SetupAt  time.Time `yaml:"setup_at,omitempty"`
 	SetupErr string    `yaml:"setup_err,omitempty"`
+	// Owner names the automation that made this tree and may refresh, run and
+	// remove it unasked (OwnerReviewer). Empty is a tree a person or the PM
+	// made, which no automation touches.
+	Owner string `yaml:"owner,omitempty"`
 }
+
+// OwnerReviewer marks a review tree the automated reviewer made.
+const OwnerReviewer = "reviewer"
 
 // MemberBase returns the branch a member's pull request should target, or ""
 // for the repository default.

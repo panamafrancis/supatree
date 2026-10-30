@@ -36,6 +36,12 @@ const (
 	// EventAuthorPushed is the author moving the head out from under a review
 	// in progress — the one transition that makes a reviewer's work stale.
 	EventAuthorPushed EventKind = "author_pushed"
+	// EventReviewPosted is the automated reviewer having posted a review.
+	EventReviewPosted EventKind = "review_posted"
+	// EventReviewFailed is the automated reviewer giving up on a pull request
+	// after repeated runs that posted nothing. Nothing retries it until the
+	// pull request changes, so a person has to look.
+	EventReviewFailed EventKind = "review_failed"
 )
 
 // Event is one entry in the activity ledger (<state>/ledger/events.jsonl).

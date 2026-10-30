@@ -20,6 +20,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/panamafrancis/supatree/pkg/supatree"
+	"github.com/panamafrancis/supatree/pkg/supatree/reviewer"
 	"github.com/panamafrancis/workbench/pkg/config"
 	"github.com/panamafrancis/workbench/pkg/github"
 	"github.com/panamafrancis/workbench/pkg/zellij"
@@ -140,8 +141,16 @@ func watchRound(ctx context.Context) error {
 
 	cache := github.NewCache(supatree.PRCachePath())
 	_ = cache.Load()
+	targets := supatree.FetchTargets(insts)
+	// The reviewer's repositories ride on the same round: one conditional
+	// listing per repo, which a branch in it would have cost anyway.
+	if rs, err := reviewer.Resolve(cfg); err == nil {
+		targets = append(targets, reviewer.WatchTargets(cfg, rs)...)
+	} else if !errors.Is(err, reviewer.ErrDisabled) {
+		logWatch("reviewer: %v", err)
+	}
 	if !cache.InBackoff(github.ResourceCore, time.Now()) {
-		if out := supatree.FetchPRs(supatree.FetchTargets(insts), cache, false); out.Err != nil {
+		if out := supatree.FetchPRs(targets, cache, false); out.Err != nil {
 			// A failed fetch is not a failed round: the summary below is still
 			// derivable from local git plus whatever the cache already holds.
 			logWatch("PR fetch incomplete: %v", out.Err)
@@ -168,6 +177,7 @@ func watchRound(ctx context.Context) error {
 
 	deliver(ctx, cfg, evs, cur.At)
 	runSchedule(cur.At)
+	runReviewer(ctx, cfg, cache)
 	runLaunches(ctx)
 	if known, err := supatree.KnownTreeNames(cfg); err == nil {
 		for _, line := range supatree.SweepRemoved(supatreeWorkspace(), known) {
@@ -175,6 +185,25 @@ func watchRound(ctx context.Context) error {
 		}
 	}
 	return nil
+}
+
+// theReviewer is the watcher's automated reviewer (pkg/supatree/reviewer). Its
+// tree operations share the op lock, so they never interleave with the op
+// queue's or with a restart.
+var theReviewer = &reviewer.Reviewer{Lock: &opsMu, Logf: logWatch}
+
+// runReviewer starts a reviewer round in the background: a round can create
+// trees, which takes a while, and must not hold up the watcher's own. A round
+// still going when the next is due makes that one a no-op.
+func runReviewer(ctx context.Context, cfg *supatree.Config, cache *github.Cache) {
+	if watchOnce {
+		// --once exits when the round returns, which would cut a review run
+		// off as soon as it started: plan and act, then wait for the runs.
+		theReviewer.Round(ctx, cfg, cache)
+		theReviewer.Wait()
+		return
+	}
+	go theReviewer.Round(ctx, cfg, cache)
 }
 
 // pmMailTick moves tree agents' messages for a PM into the request queue and,

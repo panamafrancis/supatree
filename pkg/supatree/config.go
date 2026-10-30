@@ -62,12 +62,40 @@ type Config struct {
 	// a request arrives for it. Off by default: the text lands wherever the
 	// prompt is, including in the middle of something you are typing there.
 	PMNudge bool `yaml:"pm_nudge,omitempty"`
+	// Reviewer configures the automated reviewer (pkg/supatree/reviewer),
+	// which the watcher runs when it is enabled.
+	Reviewer *ReviewerSettings `yaml:"reviewer,omitempty"`
 	// Models is supatree's own open map of launchable models — the same shape
 	// as workbench's, never read from it. Empty means the built-in defaults.
 	Models map[string]config.Model `yaml:"models,omitempty"`
 	// Repos holds personal per-repo settings, keyed by host/owner/repo. They
 	// are local to this machine and never belong in a shared supatree.yml.
 	Repos map[string]RepoSettings `yaml:"repos,omitempty"`
+}
+
+// ReviewerSettings configure the automated reviewer: a GitHub account whose
+// review requests the watcher picks up, reviews in review trees of its own and
+// answers. Durations are Go duration strings; empty fields take the defaults
+// pkg/supatree/reviewer documents.
+type ReviewerSettings struct {
+	Enabled bool `yaml:"enabled"`
+	// Login is the reviewer's GitHub account. It must be the account gh is
+	// authenticated as — reviews are posted through gh — and must not be the
+	// account that authors the pull requests: GitHub refuses an approval of
+	// your own.
+	Login string `yaml:"login"`
+	// Stacks limits the reviewer to these stacks' repositories. Empty is every
+	// registered stack.
+	Stacks []string `yaml:"stacks,omitempty"`
+	// Model is the models entry reviews run under; it needs exec_args. Empty
+	// is the default model.
+	Model         string `yaml:"model,omitempty"`
+	GroupWindow   string `yaml:"group_window,omitempty"`
+	LLMGrouping   bool   `yaml:"llm_grouping,omitempty"`
+	MaxConcurrent int    `yaml:"max_concurrent,omitempty"`
+	MaxAttempts   int    `yaml:"max_attempts,omitempty"`
+	Timeout       string `yaml:"timeout,omitempty"`
+	TreeTTL       string `yaml:"tree_ttl,omitempty"`
 }
 
 // RepoSettings are one repo's personal, machine-local settings.
