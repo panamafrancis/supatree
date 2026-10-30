@@ -96,6 +96,11 @@ type ReviewerSettings struct {
 	MaxAttempts   int    `yaml:"max_attempts,omitempty"`
 	Timeout       string `yaml:"timeout,omitempty"`
 	TreeTTL       string `yaml:"tree_ttl,omitempty"`
+	// Guidance is extra review advice from whoever runs the reviewer, given
+	// to every review it runs. GuidanceFile is the same from a file, relative
+	// to supatree's config directory; both may be set.
+	Guidance     string `yaml:"guidance,omitempty"`
+	GuidanceFile string `yaml:"guidance_file,omitempty"`
 }
 
 // RepoSettings are one repo's personal, machine-local settings.

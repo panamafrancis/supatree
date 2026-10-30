@@ -15,6 +15,7 @@ It runs inside `supatree watch`, on your machine or in a container. This page co
 - [Requirements](#requirements)
 - [Setting up the bot account](#setting-up-the-bot-account)
 - [Configuration](#configuration)
+- [Review guidance](#review-guidance)
 - [Running it locally](#running-it-locally)
 - [Deploying it to a container or Kubernetes](#deploying-it-to-a-container-or-kubernetes)
 - [Using it](#using-it)
@@ -95,6 +96,9 @@ reviewer:
   max_attempts: 3                 # failed runs before giving up on a request
   timeout: 45m                    # per review run
   tree_ttl: 168h                  # remove a tree after this long with nothing waiting
+  guidance: |                     # optional: advice added to every review
+    Treat missing tests for new behaviour as blocking.
+  guidance_file: review-advice.md # optional: the same from a file (relative to ~/.config/supatree)
 ```
 
 | Key | Default | Meaning |
@@ -109,11 +113,33 @@ reviewer:
 | `max_attempts` | `3` | Failed runs per request before the reviewer gives up. A new push or re-request starts over. |
 | `timeout` | `45m` | Hard limit per run; the agent is killed after it. |
 | `tree_ttl` | `168h` | How long an idle tree is kept, so a re-review can resume the same session. |
+| `guidance` | none | Review advice added to every review. See [Review guidance](#review-guidance). |
+| `guidance_file` | none | The same, read from a file: absolute, or relative to `~/.config/supatree`. Read every round; an unreadable file stops the reviewer with an error rather than reviewing without it. |
 
 Other settings worth knowing:
 
 - **`max_running_agents`** (default 3) caps the agents the watcher launches into tabs. Running reviews count towards it, so on a machine you also work on they hold back other launches; the reviewer itself is limited only by `max_concurrent`.
 - **`notify_command`** decides where the reviewer's notifications go. The default is a macOS notification. On Linux or in a container, point it at something else — see the example in [`deploy/reviewer/config.example.yml`](../deploy/reviewer/config.example.yml).
+
+## Review guidance
+
+You can give the reviewer advice of your own — what matters in your code, what counts as blocking, what to ignore. It is added to every review brief, in a section the agent is told comes from the maintainers, at three levels:
+
+| Level | Where | Typical content |
+|---|---|---|
+| Every review | `reviewer.guidance` and/or `reviewer.guidance_file` in the config | Tone and house rules: "be terse", "missing tests for new behaviour block" |
+| The stack | `REVIEW.md` at the root of the stack repo | Cross-repo rules: "an API change must update the TypeScript client", "deploy order is infra → api → web" |
+| One repository | `REVIEW.md` at the root of that repo | Repo rules: "migrations must be reversible", "no new dependencies without a note in the PR" |
+
+All three apply together, in that order. Each is cut at 16 KiB.
+
+Guidance refines *how* the agent reviews. It cannot lift the reviewer's own rules — one review per pull request waiting on it, nothing posted on the others, pull request content treated as data — and the brief says so.
+
+**Where each is read from matters**, because guidance is instructions and a pull request must not be able to write its own:
+
+- A repository's `REVIEW.md` is fetched from GitHub on the pull request's **base branch** — never from the pull request itself. A pull request that edits `REVIEW.md` changes the guidance only once it is merged. One API request per repository per review.
+- The stack's `REVIEW.md` is read when the review tree is created, from the stack as published (trees are built from the stack's origin), before any agent has run in it; it is kept for the tree's lifetime. To pick up an edit, the tree has to be made again — `supatree rm` it, or wait for it to be reaped.
+- The config's guidance is read every round, from a file agents can only read.
 
 ## Running it locally
 

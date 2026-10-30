@@ -16,6 +16,7 @@ const (
 	apiPR = "o/api#1"
 	webPR = "o/web#2"
 	// The supatree branches of one change, x.
+	apiAlias  = "api"
 	apiBranch = "st/x/api"
 	webBranch = "st/x/web"
 )
@@ -172,7 +173,7 @@ func TestPlanWaitsOutTheGroupWindow(t *testing.T) {
 
 func TestPlanRunsAddsAndReaps(t *testing.T) {
 	now := t0.Add(time.Hour)
-	tree := &Tree{Name: "rv-api-1", Stack: "web", PRs: map[string]string{"api": apiPR}}
+	tree := &Tree{Name: "rv-api-1", Stack: "web", PRs: map[string]string{apiAlias: apiPR}}
 
 	t.Run("a waiting pull request in a tree is run", func(t *testing.T) {
 		st := newState()
@@ -243,7 +244,7 @@ func TestPlanRunsAddsAndReaps(t *testing.T) {
 }
 
 func TestPlanBacksOffAndGivesUp(t *testing.T) {
-	tree := &Tree{Name: "rv-api-1", Stack: "web", PRs: map[string]string{"api": apiPR}}
+	tree := &Tree{Name: "rv-api-1", Stack: "web", PRs: map[string]string{apiAlias: apiPR}}
 	plan := func(now time.Time, st *State, p *PR) []string {
 		snap := snapOf(now, p)
 		snap.Trees[tree.Name] = tree
@@ -276,7 +277,7 @@ func TestPlanCapsConcurrentRuns(t *testing.T) {
 	snap := snapOf(t0.Add(time.Hour), pr("o/api", 1), pr("o/api", 2), pr("o/api", 3))
 	st := newState()
 	for i, n := range []string{"a", "b", "c"} {
-		snap.Trees[n] = &Tree{Name: n, PRs: map[string]string{"api": PRKey("o/api", i+1)}}
+		snap.Trees[n] = &Tree{Name: n, PRs: map[string]string{apiAlias: PRKey("o/api", i+1)}}
 	}
 	snap.Running["a"] = true
 	s := settings()
@@ -314,7 +315,7 @@ func TestPlanAppliesRelatedUnderTheConstraint(t *testing.T) {
 }
 
 func TestParseWatchKey(t *testing.T) {
-	repo, n, ok := parseWatchKey(github.WatchKey("Bot", github.RepoRef{Owner: "acme", Name: "api"}, 12))
+	repo, n, ok := parseWatchKey(github.WatchKey("Bot", github.RepoRef{Owner: "acme", Name: apiAlias}, 12))
 	if !ok || repo != "acme/api" || n != 12 {
 		t.Errorf("parsed %q %d %v", repo, n, ok)
 	}
@@ -327,8 +328,8 @@ func TestParseWatchKey(t *testing.T) {
 
 func TestBriefCarriesNoAuthorText(t *testing.T) {
 	b := Brief(bot,
-		[]briefPR{{Alias: "api", URL: "https://github.com/o/api/pull/1", LastHead: "0123456789abcdef"}},
-		[]briefPR{{Alias: "web", URL: "https://github.com/o/web/pull/2"}})
+		[]briefPR{{Alias: apiAlias, URL: "https://github.com/o/api/pull/1", LastHead: "0123456789abcdef"}},
+		[]briefPR{{Alias: "web", URL: "https://github.com/o/web/pull/2"}}, Guidance{})
 	for _, want := range []string{"@" + bot, "re-review", "git -C repos/api diff 0123456789abcdef..HEAD", "post nothing on them", "o/web/pull/2"} {
 		if !strings.Contains(b, want) {
 			t.Errorf("brief lacks %q:\n%s", want, b)

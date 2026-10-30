@@ -243,8 +243,10 @@ func (r *Reviewer) create(cfg *supatree.Config, s Settings, snap Snapshot, a Act
 		return
 	}
 	r.logf("reviewer: created %s for %s", inst.Name, strings.Join(a.PRs, ", "))
+	// Now, before any agent has run in the tree and could have changed it.
+	stackGuidance := readStackGuidance(inst.Root)
 	_ = MutateState(func(st *State) error {
-		st.Trees[inst.Name] = &TreeState{CreatedAt: snap.Now}
+		st.Trees[inst.Name] = &TreeState{CreatedAt: snap.Now, StackGuidance: stackGuidance}
 		for _, k := range a.PRs {
 			st.pr(k).Tree = inst.Name
 		}
@@ -353,7 +355,8 @@ func (r *Reviewer) run(ctx context.Context, cfg *supatree.Config, s Settings, sn
 	// Whatever is left in the mailbox is from a run that did not finish, or
 	// AddReview's note; this brief supersedes all of it.
 	_, _ = supatree.Drain(inst.Root, AgentName)
-	if err := supatree.Deliver(inst.Root, AgentName, AgentName, briefFor(inst, s.Login, a.PRs, st)); err != nil {
+	brief := briefFor(inst, s.Login, a.PRs, st, guidanceFor(inst, s, st.Trees[a.Tree], r.logf))
+	if err := supatree.Deliver(inst.Root, AgentName, AgentName, brief); err != nil {
 		r.failed(s, a.PRs, a.Tree, err)
 		return
 	}

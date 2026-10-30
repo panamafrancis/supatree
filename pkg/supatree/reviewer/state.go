@@ -49,6 +49,9 @@ type TreeState struct {
 	CreatedAt time.Time `json:"created_at"`
 	LastRunAt time.Time `json:"last_run_at,omitzero"`
 	Runs      int       `json:"runs,omitempty"`
+	// StackGuidance is the stack's REVIEW.md as the tree was created with
+	// it, read before any agent ran there (see guidance.go).
+	StackGuidance string `json:"stack_guidance,omitempty"`
 }
 
 // StatePath is the reviewer's state file.

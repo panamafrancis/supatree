@@ -27,3 +27,8 @@ reviewer:
   max_attempts: 3
   timeout: 45m
   tree_ttl: 168h
+  # Advice added to every review; REVIEW.md in the stack repo and in each
+  # repository add more (docs/reviewer.md, "Review guidance").
+  # guidance: |
+  #   Treat missing tests for new behaviour as blocking.
+  # guidance_file: review-advice.md

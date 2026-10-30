@@ -14,6 +14,9 @@ package reviewer
 import (
 	"errors"
 	"fmt"
+	"os"
+	"path/filepath"
+	"strings"
 	"time"
 
 	"github.com/panamafrancis/supatree/pkg/supatree"
@@ -48,6 +51,9 @@ type Settings struct {
 	// TreeTTL is how long a tree with nothing waiting on it is kept, so a
 	// re-review resumes the same session rather than starting over.
 	TreeTTL time.Duration
+	// Guidance is the operator's review advice: guidance, then the contents
+	// of guidance_file.
+	Guidance string
 }
 
 // ErrDisabled is a config with the reviewer off or absent.
@@ -95,6 +101,9 @@ func ResolveConfigured(c *supatree.Config) (Settings, error) {
 	if s.MaxAttempts <= 0 {
 		s.MaxAttempts = DefaultMaxAttempts
 	}
+	if s.Guidance, err = operatorGuidance(r.Guidance, r.GuidanceFile); err != nil {
+		return Settings{}, err
+	}
 	for _, st := range s.Stacks {
 		if c.FindStack(st) == nil {
 			return Settings{}, fmt.Errorf("reviewer.stacks names %q, which is not a registered stack", st)
@@ -109,6 +118,29 @@ func (s Settings) WatchedStacks(c *supatree.Config) []string {
 		return s.Stacks
 	}
 	return c.StackAliases()
+}
+
+// operatorGuidance joins the inline guidance and the guidance file's
+// contents. The file is read every round, so an edit applies to the next run.
+func operatorGuidance(inline, file string) (string, error) {
+	parts := []string{strings.TrimSpace(inline)}
+	if file != "" {
+		if !filepath.IsAbs(file) {
+			file = filepath.Join(supatree.ConfigDir(), file)
+		}
+		data, err := os.ReadFile(file)
+		if err != nil {
+			return "", fmt.Errorf("reviewer.guidance_file: %w", err)
+		}
+		parts = append(parts, strings.TrimSpace(string(data)))
+	}
+	var out []string
+	for _, p := range parts {
+		if p != "" {
+			out = append(out, p)
+		}
+	}
+	return capGuidance(strings.Join(out, "\n\n")), nil
 }
 
 func duration(name, v string, def time.Duration) (time.Duration, error) {
