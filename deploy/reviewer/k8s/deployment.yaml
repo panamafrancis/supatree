@@ -1,0 +1,75 @@
+# The supatree reviewer. UNTESTED — see docs/reviewer.md, "What to verify first".
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: supatree-reviewer
+  labels:
+    app: supatree-reviewer
+spec:
+  # Exactly one: the watcher holds a lock on the volume, and a second replica
+  # could only wait for it. Recreate stops the old pod before the new one
+  # starts, so the two never contend.
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app: supatree-reviewer
+  template:
+    metadata:
+      labels:
+        app: supatree-reviewer
+    spec:
+      securityContext:
+        runAsUser: 10001
+        runAsGroup: 10001
+        fsGroup: 10001
+        # nono confines agents with Landlock. RuntimeDefault seccomp must
+        # allow the landlock_* syscalls on your runtime; verify with
+        #   kubectl exec deploy/supatree-reviewer -- nono run --profile supatree-agent -- true
+        seccompProfile:
+          type: RuntimeDefault
+      # Running reviews are stopped on SIGTERM; give them time to wind down.
+      terminationGracePeriodSeconds: 60
+      containers:
+        - name: reviewer
+          image: ghcr.io/REPLACE_ME/supatree-reviewer:latest
+          env:
+            - name: REVIEWER_LOGIN
+              value: acme-review-bot
+            # Space-separated stack repository URLs.
+            - name: SUPATREE_STACKS
+              value: git@github.com:acme/platform-stack.git
+            - name: REVIEWER_LLM_GROUPING
+              value: "false"
+          envFrom:
+            - secretRef:
+                name: supatree-reviewer
+          volumeMounts:
+            - name: home
+              mountPath: /home/reviewer
+            - name: ssh
+              mountPath: /secrets/ssh
+              readOnly: true
+          resources:
+            # Each review builds and tests whole repositories; size for
+            # reviewer.max_concurrent (default 2) of those at once.
+            requests:
+              cpu: "2"
+              memory: 4Gi
+            limits:
+              memory: 8Gi
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: ["ALL"]
+      volumes:
+        - name: home
+          persistentVolumeClaim:
+            claimName: supatree-reviewer-home
+        - name: ssh
+          secret:
+            secretName: supatree-reviewer-ssh
+            # Group-readable, for fsGroup: the files belong to root, and the
+            # pod runs as 10001. The entrypoint loads a private 0600 copy.
+            defaultMode: 0440

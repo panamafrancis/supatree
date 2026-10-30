@@ -54,8 +54,10 @@ var watchCmd = &cobra.Command{
 		}
 		err := config.TryFileLock(supatree.WatchLockPath(), func() error {
 			// Only the winner owns the log: a loser rotating it would move the
-			// file out from under the watcher that is actually running.
-			if !watchOnce {
+			// file out from under the watcher that is actually running. A
+			// headless watcher logs to stderr, where a container runtime
+			// collects it.
+			if !watchOnce && !watchHeadless {
 				openWatchLog()
 				defer closeWatchLog()
 			}
@@ -780,5 +782,5 @@ func init() {
 	watchCmd.Flags().BoolVar(&watchOnce, "once", false, "run a single round and exit (for cron or scripts)")
 	watchCmd.Flags().StringVar(&watchSession, "session", "", "zellij session to consult for the focused tab")
 	watchCmd.Flags().BoolVar(&watchQuiet, "quiet", false, "exit silently when another watcher holds the lock")
-	watchCmd.Flags().BoolVar(&watchHeadless, "headless", false, "run without zellij: never exit for want of a session, launch no tabs (also SUPATREE_HEADLESS=1)")
+	watchCmd.Flags().BoolVar(&watchHeadless, "headless", false, "run without zellij: never exit for want of a session, launch no tabs, log to stderr (also SUPATREE_HEADLESS=1)")
 }
