@@ -169,6 +169,10 @@ var ghLogin = func() (string, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 	defer cancel()
 	out, err := exec.CommandContext(ctx, "gh", "api", "user", "--jq", ".login").Output()
+	var exit *exec.ExitError
+	if errors.As(err, &exit) && len(exit.Stderr) > 0 {
+		return "", fmt.Errorf("gh api user: %s", strings.TrimSpace(string(exit.Stderr)))
+	}
 	if err != nil {
 		return "", err
 	}

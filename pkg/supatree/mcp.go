@@ -97,7 +97,7 @@ func MCPServer(version string) *mcp.Server {
 				Description: "Open PRs for every member with commits, in dependency order, cross-linking the sibling PRs. Refuses if the slug is still auto-generated.",
 				InputSchema: mcp.ObjectSchema(map[string]any{
 					"title": mcp.StringProp("PR title applied to every repo (omit to auto-fill)"),
-					"body":  mcp.StringProp("PR body prepended to every repo's cross-link section"),
+					"body":  mcp.StringProp("PR body, followed in every repo by a section linking the sibling PRs"),
 					"draft": mcp.BoolProp("Create all as drafts"),
 				}, nil),
 				Handler: handleCreatePRs,
@@ -456,7 +456,7 @@ func handleCreatePR(args map[string]any) (string, bool) {
 			return fmt.Sprintf("dependencies without PRs yet: %s (pass force=true to override)", strings.Join(missing, ", ")), true
 		}
 	}
-	out, err := createOnePR(m.Path, m.Base, m.CacheKey(), args)
+	out, err := createOnePR(m.Path, m.Base, m.CacheKey(), ChangeBlock(inst.Slug, siblingURLs(inst, m.Alias)), args)
 	if err != nil {
 		return out, true
 	}
@@ -485,13 +485,21 @@ func handleCreatePRs(args map[string]any) (string, bool) {
 			fmt.Fprintf(&b, "%s: skipped (no commits ahead)\n", m.Alias)
 			continue
 		}
-		out, err := createOnePR(m.Path, m.Base, m.CacheKey(), args)
+		// The siblings opened so far; the pass below fills in the rest.
+		out, err := createOnePR(m.Path, m.Base, m.CacheKey(), ChangeBlock(inst.Slug, siblingURLs(inst, m.Alias)), args)
 		if err != nil {
 			fmt.Fprintf(&b, "%s: ERROR %s\n", m.Alias, strings.TrimSpace(out))
 			continue
 		}
 		created++
 		fmt.Fprintf(&b, "%s: %s\n", m.Alias, strings.TrimSpace(out))
+	}
+	// Every pull request of the change, including ones a create_pr opened
+	// earlier, now links every other.
+	if all := siblingURLs(inst, ""); created > 0 && len(all) > 1 {
+		for _, line := range crossLink(inst.Slug, all) {
+			fmt.Fprintf(&b, "%s\n", line)
+		}
 	}
 	fmt.Fprintf(&b, "\ncreated %d PR(s) in order: %s", created, strings.Join(inst.MemberAliases(), " → "))
 	return b.String(), false
@@ -811,7 +819,12 @@ func depsWithoutPRs(inst *Instance, m *Member) ([]string, error) {
 // default. A tree forked from a review sets it to the author's branch, so the
 // change arrives as a proposal on their pull request rather than as a rival one
 // against main.
-func createOnePR(worktreePath, base, key string, args map[string]any) (string, error) {
+//
+// block is the change block (ChangeBlock) the pull request carries: added to
+// the body given, or — when gh fills the body from the commits — written into
+// it once the pull request exists. A failure to add it afterwards is reported
+// in the output, not as an error: the pull request is open.
+func createOnePR(worktreePath, base, key, block string, args map[string]any) (string, error) {
 	pushCtx, pushCancel := mcp.ToolContext()
 	defer pushCancel()
 	if out, err := exec.CommandContext(pushCtx, "git", "-C", worktreePath, "push", "-u", "origin", "HEAD").CombinedOutput(); err != nil {
@@ -827,8 +840,10 @@ func createOnePR(worktreePath, base, key string, args map[string]any) (string, e
 	} else {
 		ghArgs = append(ghArgs, "--fill")
 	}
-	if body, ok := args["body"].(string); ok && body != "" {
-		ghArgs = append(ghArgs, "--body", body)
+	body, _ := args["body"].(string)
+	if body != "" {
+		// On stdin: a body is free text, and a long one is no argument.
+		ghArgs = append(ghArgs, "--body-file", "-")
 	}
 	if draft, ok := args["draft"].(bool); ok && draft {
 		ghArgs = append(ghArgs, "--draft")
@@ -837,6 +852,9 @@ func createOnePR(worktreePath, base, key string, args map[string]any) (string, e
 	defer ghCancel()
 	cmd := exec.CommandContext(ghCtx, "gh", ghArgs...)
 	cmd.Dir = worktreePath
+	if body != "" {
+		cmd.Stdin = strings.NewReader(WithChangeBlock(body, block))
+	}
 	out, err := cmd.CombinedOutput()
 	if err != nil {
 		return fmt.Sprintf("gh pr create failed: %s", strings.TrimSpace(string(out))), err
@@ -846,6 +864,13 @@ func createOnePR(worktreePath, base, key string, args map[string]any) (string, e
 	// shows it immediately instead of on the next poll.
 	draft, _ := args["draft"].(bool)
 	github.RecordCreatedPR(PRCachePath(), key, text, draft)
+	if body == "" {
+		if url := prURLIn(text); url != "" {
+			if err := setChangeBlock(url, block); err != nil {
+				text += "\n(could not add the change block: " + err.Error() + ")"
+			}
+		}
+	}
 	return text, nil
 }
 

@@ -7,6 +7,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/panamafrancis/supatree/pkg/supatree"
 	"github.com/panamafrancis/workbench/pkg/github"
 )
 
@@ -342,5 +343,18 @@ func TestParseLLMOutput(t *testing.T) {
 	text := `{"type":"result","result":"{\"groups\":[{\"prs\":[\"o/api#1\"]}]}"}`
 	if got, err := parseLLMOutput([]byte(text), prs); err != nil || len(got) != 0 {
 		t.Errorf("a one-PR group is no group: %v %v", got, err)
+	}
+}
+
+// The marker the reviewer groups on is the one create_prs writes.
+func TestGroupsOnTheBlockCreatePRsWrites(t *testing.T) {
+	body := supatree.WithChangeBlock("desc", supatree.ChangeBlock("fix-login", nil))
+	prs := map[string]*PR{
+		apiPR: pr("o/api", 1, func(p *PR) { p.Body = body; p.HeadRef = "a" }),
+		webPR: pr("o/web", 2, func(p *PR) { p.Body = body; p.HeadRef = "b" }),
+	}
+	g := groupDeterministic(prs)
+	if got := g.components(); len(got) != 1 || g.reason[webPR] != ReasonMarker {
+		t.Errorf("groups = %v (reason %q), want one by the marker", got, g.reason[webPR])
 	}
 }
