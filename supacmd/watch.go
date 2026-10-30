@@ -29,6 +29,10 @@ var (
 	watchOnce    bool
 	watchSession string
 	watchQuiet   bool
+	// watchHeadless runs the watcher with no zellij: no session to outlive,
+	// no tabs to launch into, no panes to nudge. Set by --headless or
+	// SUPATREE_HEADLESS=1, for a container or a host with nobody logged in.
+	watchHeadless bool
 )
 
 var watchCmd = &cobra.Command{
@@ -44,6 +48,9 @@ var watchCmd = &cobra.Command{
 		"session is open.",
 	RunE: func(cmd *cobra.Command, args []string) error {
 		leaveCallerDir()
+		if os.Getenv("SUPATREE_HEADLESS") == "1" {
+			watchHeadless = true
+		}
 		err := config.TryFileLock(supatree.WatchLockPath(), func() error {
 			// Only the winner owns the log: a loser rotating it would move the
 			// file out from under the watcher that is actually running.
@@ -102,8 +109,9 @@ func runWatch(ctx context.Context) error {
 			// The daemon is spawned by `supatree start` and outlives its parent
 			// (start execs into zellij), so nothing else will ever reap it. Its
 			// own exit condition is the absence of the sessions it exists to
-			// serve — without this it polls GitHub forever.
-			if !watchSessionsAlive() {
+			// serve — without this it polls GitHub forever. A headless watcher
+			// serves no session: it runs until it is stopped.
+			if !watchHeadless && !watchSessionsAlive() {
 				logWatch("no supatree sessions left — exiting")
 				return nil
 			}
@@ -186,7 +194,7 @@ func pmMailTick() {
 	} else if _, err := supatree.ForwardPMMail(insts); err != nil {
 		logWatch("forward PM mail: %v", err)
 	}
-	if !cfg.PMNudge {
+	if !cfg.PMNudge || watchHeadless {
 		return
 	}
 	nudged, err := supatree.NudgePMs()
@@ -341,6 +349,11 @@ func runOps() {
 }
 
 func runLaunches(ctx context.Context) {
+	if watchHeadless {
+		// Every queued launch opens a tab, and there is no session to open it
+		// in. The queue is left as it is, for a watcher that has one.
+		return
+	}
 	if _, err := os.Stat(supatree.LaunchPath()); err != nil {
 		return
 	}
@@ -396,8 +409,8 @@ var lastDeferred int
 var recentLaunches = map[string]time.Time{}
 
 // newLaunchGate counts the busy agents across every tree: a live tab whose
-// transcript has grown within BusyWindow, or one this watcher started within
-// it.
+// transcript has grown within BusyWindow, one this watcher started within it,
+// or a headless run.
 func newLaunchGate(cfg *supatree.Config, insts []*supatree.Instance, now time.Time) *supatree.LaunchGate {
 	for k, at := range recentLaunches {
 		if now.Sub(at) >= supatree.BusyWindow {
@@ -406,6 +419,9 @@ func newLaunchGate(cfg *supatree.Config, insts []*supatree.Instance, now time.Ti
 	}
 	live := liveAgentTabs()
 	gate := &supatree.LaunchGate{Max: cfg.ResolveMaxRunningAgents(), Live: func(tab string) bool { return live[tab] }}
+	// A headless run has no tab to be live in, but it is an agent at work:
+	// it counts for as long as its process exists.
+	gate.Busy += supatree.HeadlessRunning()
 	for _, inst := range insts {
 		agents, err := supatree.LoadAgents(inst.Root)
 		if err != nil {
@@ -735,4 +751,5 @@ func init() {
 	watchCmd.Flags().BoolVar(&watchOnce, "once", false, "run a single round and exit (for cron or scripts)")
 	watchCmd.Flags().StringVar(&watchSession, "session", "", "zellij session to consult for the focused tab")
 	watchCmd.Flags().BoolVar(&watchQuiet, "quiet", false, "exit silently when another watcher holds the lock")
+	watchCmd.Flags().BoolVar(&watchHeadless, "headless", false, "run without zellij: never exit for want of a session, launch no tabs (also SUPATREE_HEADLESS=1)")
 }
