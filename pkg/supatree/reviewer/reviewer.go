@@ -222,10 +222,10 @@ var ghLogin = func() (string, error) {
 // update times: while a group waits out its window the same question comes
 // up every round, and the answer only changes when the pull requests do.
 func (r *Reviewer) memoRelated(ask Related) Related {
-	return func(prs []*PR) [][]string {
+	return func(prs []*PR, inReview map[string]string) [][]string {
 		var b strings.Builder
 		for _, p := range prs {
-			fmt.Fprintf(&b, "%s@%d;", p.Key, p.UpdatedAt.Unix())
+			fmt.Fprintf(&b, "%s@%d:%s;", p.Key, p.UpdatedAt.Unix(), inReview[p.Key])
 		}
 		key := b.String()
 		r.mu.Lock()
@@ -234,7 +234,7 @@ func (r *Reviewer) memoRelated(ask Related) Related {
 		if ok {
 			return got
 		}
-		got = ask(prs)
+		got = ask(prs, inReview)
 		r.mu.Lock()
 		if r.related == nil || len(r.related) > 256 {
 			r.related = map[string][][]string{}

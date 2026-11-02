@@ -19,6 +19,8 @@ const (
 	apiAlias  = "api"
 	apiBranch = "st/x/api"
 	webBranch = "st/x/web"
+	webAlias  = "web"
+	treeA     = "rv-a"
 )
 
 var t0 = time.Date(2026, 10, 1, 12, 0, 0, 0, time.UTC)
@@ -295,7 +297,7 @@ func TestPlanAppliesRelatedUnderTheConstraint(t *testing.T) {
 	api2 := pr("o/api", 3, func(p *PR) { p.HeadRef = "c" })
 	st := newState()
 	var asked []string
-	related := func(prs []*PR) [][]string {
+	related := func(prs []*PR, _ map[string]string) [][]string {
 		for _, p := range prs {
 			asked = append(asked, p.Key)
 		}
@@ -395,7 +397,7 @@ func TestDryRunRecordsNothing(t *testing.T) {
 
 func TestDryRunAsksRelatedOnce(t *testing.T) {
 	asked := 0
-	related := func([]*PR) [][]string { asked++; return nil }
+	related := func([]*PR, map[string]string) [][]string { asked++; return nil }
 	st := newState()
 	st.PRs[apiPR] = &PRState{WaitingSince: t0}
 	st.PRs[webPR] = &PRState{WaitingSince: t0}
@@ -412,5 +414,72 @@ func TestBriefWithoutApproval(t *testing.T) {
 	b := Brief(bot, false, []briefPR{{Alias: apiAlias, URL: "https://github.com/o/api/pull/1"}}, nil, Guidance{})
 	if strings.Contains(b, "- APPROVE when") || !strings.Contains(b, "You may not APPROVE") {
 		t.Errorf("brief still offers APPROVE:\n%s", b)
+	}
+}
+
+// A sibling opened after its change's tree was made, linked by nothing, still
+// reaches the LLM pass with the tree's pull requests, and joins the tree.
+func TestRelatedJoinsLateSiblingToTree(t *testing.T) {
+	api := pr("o/api", 1, func(p *PR) { p.HeadRef = "a"; p.Requested = false })
+	web := pr("o/web", 2, func(p *PR) { p.HeadRef = "b"; p.Requested = false })
+	cli := pr("o/cli", 3, func(p *PR) { p.HeadRef = "c" })
+	snap := snapOf(t0, api, web, cli)
+	snap.Trees[treeA] = &Tree{Name: treeA, PRs: map[string]string{apiAlias: apiPR, webAlias: webPR}}
+	st := newState()
+	var sawInReview map[string]string
+	related := func(prs []*PR, inReview map[string]string) [][]string {
+		sawInReview = inReview
+		return [][]string{{webPR, "o/cli#3"}}
+	}
+	got := kinds(Plan(snap, st, settings(), related))
+	if !slices.Equal(got, []string{"add:rv-a:o/cli#3"}) {
+		t.Errorf("actions = %v, want the late sibling added to rv-a at once", got)
+	}
+	if sawInReview[apiPR] != treeA || sawInReview[webPR] != treeA || sawInReview["o/cli#3"] != "" {
+		t.Errorf("inReview = %v", sawInReview)
+	}
+	if st.PRs["o/cli#3"].Grouping != ReasonLLM {
+		t.Errorf("grouping = %q", st.PRs["o/cli#3"].Grouping)
+	}
+}
+
+// What is under review is only something to join: a proposal that would
+// regroup reviewed pull requests, or pull two trees together, is not used for
+// that, and a lone pull request alone with reviewed ones in its own repository
+// does not trigger a call.
+func TestRelatedNeverRegroupsReviewedPRs(t *testing.T) {
+	a1 := pr("o/api", 1, func(p *PR) { p.HeadRef = "a"; p.Requested = false })
+	w2 := pr("o/web", 2, func(p *PR) { p.HeadRef = "b"; p.Requested = false })
+	c3 := pr("o/cli", 3, func(p *PR) { p.HeadRef = "c" })
+	snap := snapOf(t0.Add(time.Hour), a1, w2, c3)
+	snap.Trees[treeA] = &Tree{Name: treeA, PRs: map[string]string{apiAlias: apiPR}}
+	snap.Trees["rv-b"] = &Tree{Name: "rv-b", PRs: map[string]string{webAlias: webPR}}
+	st := newState()
+	st.PRs["o/cli#3"] = &PRState{WaitingSince: t0}
+	related := func([]*PR, map[string]string) [][]string {
+		return [][]string{{apiPR, webPR, "o/cli#3"}}
+	}
+	got := kinds(Plan(snap, st, settings(), related))
+	// cli joins one tree — the first reviewed pull request named — never both.
+	if !slices.Equal(got, []string{"add:rv-a:o/cli#3"}) {
+		t.Errorf("actions = %v", got)
+	}
+
+	asked := false
+	solo := snapOf(t0, a1, pr("o/api", 4, func(p *PR) { p.HeadRef = "d" }))
+	solo.Trees[treeA] = snap.Trees[treeA]
+	Plan(solo, newState(), settings(), func([]*PR, map[string]string) [][]string { asked = true; return nil })
+	if asked {
+		t.Error("asked about a lone pull request with nothing in another repository")
+	}
+}
+
+func TestLLMInputMarksPRsInReview(t *testing.T) {
+	in, err := llmInput([]*PR{pr("o/api", 1), pr("o/web", 2)}, map[string]string{apiPR: treeA})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Count(in, `"in_review_as": "`+treeA+`"`) != 1 {
+		t.Errorf("input does not mark exactly the reviewed pull request:\n%s", in)
 	}
 }

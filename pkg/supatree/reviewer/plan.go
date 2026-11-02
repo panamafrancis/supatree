@@ -47,9 +47,11 @@ type Action struct {
 }
 
 // Related proposes groups among pull requests the deterministic evidence left
-// alone (the LLM pass). Plan checks every proposal against the same
+// alone (the LLM pass). inReview maps those of prs already in one of the
+// reviewer's trees to it: they are there so a late sibling can join their
+// change, not to be regrouped. Plan checks every proposal against the same
 // constraint as any other union. Nil means no such pass.
-type Related func(prs []*PR) [][]string
+type Related func(prs []*PR, inReview map[string]string) [][]string
 
 // Plan decides what to do this round. It records what it observed in st —
 // when a request was first seen, why pull requests were grouped — and returns
@@ -254,7 +256,7 @@ func buildGroups(snap Snapshot, st *State, related Related, inTree map[string]st
 	}
 	g := groupDeterministic(open)
 	if related != nil {
-		applyRelated(g, open, related, func(k string) bool { return eligible(st.PRs[k], snap.Now) && inTree[k] == "" })
+		applyRelated(g, open, related, inTree, func(k string) bool { return eligible(st.PRs[k], snap.Now) && inTree[k] == "" })
 	}
 	return g, open
 }
@@ -284,34 +286,67 @@ func fitTree(tree *Tree, ks []string, prs map[string]*PR) (fit, rest []string) {
 }
 
 // applyRelated asks related about the pull requests the deterministic pass
-// left alone — waiting, in no tree, and the only one in their group — when
-// one author has several of them in different repositories, and unions what
-// it proposes, under the usual constraint.
-func applyRelated(g *groups, open map[string]*PR, related Related, candidate func(string) bool) {
+// left alone — waiting, in no tree, and the only one in their group — and
+// unions what it proposes, under the usual constraint. It asks per author,
+// when that author has such a pull request and something in another
+// repository it could belong with: another lone one, or one of theirs
+// already under review, so a sibling opened after its change's tree was made
+// can still join it. Pull requests under review are only something to join:
+// a proposal is used only for the lone ones in it, and joins at most one
+// pull request under review.
+func applyRelated(g *groups, open map[string]*PR, related Related, inTree map[string]string, candidate func(string) bool) {
 	sizes := map[string]int{}
 	for k := range open {
 		sizes[g.find(k)]++
 	}
+	lone := map[string]bool{}
 	byAuthor := map[string][]*PR{}
 	for _, k := range sortedKeys(open) {
-		if candidate(k) && sizes[g.find(k)] == 1 && open[k].Author != "" {
-			a := strings.ToLower(open[k].Author)
-			byAuthor[a] = append(byAuthor[a], open[k])
+		if open[k].Author == "" {
+			continue
 		}
+		if candidate(k) && sizes[g.find(k)] == 1 {
+			lone[k] = true
+		} else if inTree[k] == "" {
+			continue
+		}
+		a := strings.ToLower(open[k].Author)
+		byAuthor[a] = append(byAuthor[a], open[k])
 	}
 	for _, a := range sortedKeys(byAuthor) {
 		prs := byAuthor[a]
 		repos := map[string]bool{}
+		inReview := map[string]string{}
+		asks := false
 		for _, p := range prs {
 			repos[strings.ToLower(p.Repo)] = true
+			if lone[p.Key] {
+				asks = true
+			} else {
+				inReview[p.Key] = inTree[p.Key]
+			}
 		}
-		if len(repos) < 2 {
+		if !asks || len(repos) < 2 {
 			continue
 		}
-		for _, grp := range related(prs) {
-			for _, k := range grp[1:] {
-				if open[k] != nil && open[grp[0]] != nil && sameAuthor(open[k], open[grp[0]]) {
-					g.union(grp[0], k, ReasonLLM)
+		for _, grp := range related(prs, inReview) {
+			var join []string
+			anchor := ""
+			for _, k := range grp {
+				switch {
+				case open[k] == nil:
+				case lone[k]:
+					join = append(join, k)
+				case inReview[k] != "" && anchor == "":
+					anchor = k
+				}
+			}
+			if anchor != "" {
+				join = append(join, anchor)
+			}
+			for _, k := range join[min(1, len(join)):] {
+				if sameAuthor(open[k], open[join[0]]) {
+					g.union(join[0], k, ReasonLLM)
 				}
 			}
 		}

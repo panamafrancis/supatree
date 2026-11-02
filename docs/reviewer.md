@@ -39,7 +39,7 @@ Every 30 seconds the watcher polls each watched repository's pull request list. 
   4. Optionally, an LLM pass over one author's otherwise-unrelated pull requests. See `llm_grouping`.
 
   A group holds at most one pull request per repository, all from one stack. Where the evidence conflicts, the reviewer splits rather than merges.
-- **Waits.** A new group waits `group_window` (5 minutes by default) after its newest request, so pull requests opened a minute apart land in the same tree.
+- **Waits.** A new group waits `group_window` (5 minutes by default) after its newest request, so pull requests opened a minute apart land in the same tree. A pull request that turns out to belong to a change already in review — by any of the evidence above, the LLM pass included — joins that change's tree at once, if the tree has no pull request in its repository yet.
 - **Creates a review tree.** Every repository is checked out at its pull request's head. These trees belong to the reviewer, which never touches trees you made yourself.
 - **Reviews.** It starts a headless agent with a fixed brief. The agent reads existing comments, builds, lints and tests every repository, checks the repositories against each other, and posts one review per waiting pull request:
   - **APPROVE** when nothing blocks;
@@ -115,7 +115,7 @@ reviewer:
 | `stacks` | all | Which registered stacks' repositories to watch. |
 | `model` | `default_model` | The `models:` entry reviews run under. It needs `exec_args`, the headless invocation; the built-in `claude` entry has them. Codex is not supported for headless runs. |
 | `group_window` | `5m` | How long a new group waits for siblings. |
-| `llm_grouping` | `false` | Ask Claude about one author's pull requests in different repositories that nothing links. That call has no tools, no MCP servers and no session; the pull request text goes to it on stdin, and every grouping it proposes is still checked against the one-per-repository rule. |
+| `llm_grouping` | `false` | Ask Claude about one author's pull requests in different repositories that nothing links, including whether one belongs to a change of theirs that is already in review. That call has no tools, no MCP servers and no session; the pull request text goes to it on stdin, and every grouping it proposes is still checked against the one-per-repository rule. |
 | `max_concurrent` | `2` | Concurrent review runs. Each one builds and tests whole repositories, so size this to the machine. |
 | `max_attempts` | `3` | Failed runs per request before the reviewer gives up. A new push or re-request starts over. |
 | `timeout` | `45m` | Hard limit per run; the agent is killed after it. |

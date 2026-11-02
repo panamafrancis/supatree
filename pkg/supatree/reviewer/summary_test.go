@@ -9,8 +9,8 @@ func TestSummarize(t *testing.T) {
 	s := Settings{GroupWindow: 5 * time.Minute}
 	snap := Snapshot{
 		Now:     t0,
-		Trees:   map[string]*Tree{"rv-a": {Name: "rv-a", PRs: map[string]string{"site": "o/web#2"}}},
-		Running: map[string]bool{"rv-a": true},
+		Trees:   map[string]*Tree{treeA: {Name: treeA, PRs: map[string]string{"site": "o/web#2"}}},
+		Running: map[string]bool{treeA: true},
 	}
 	st := &State{PRs: map[string]*PRState{
 		"o/api#1": {WaitingSince: t0.Add(-time.Minute)},                             // window ends t0+4m

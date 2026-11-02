@@ -69,15 +69,15 @@ func DryRun(snap Snapshot, st *State, s Settings, related Related) (Preview, err
 
 func memoize(ask Related) Related {
 	seen := map[string][][]string{}
-	return func(prs []*PR) [][]string {
+	return func(prs []*PR, inReview map[string]string) [][]string {
 		key := ""
 		for _, p := range prs {
-			key += p.Key + ";"
+			key += p.Key + ":" + inReview[p.Key] + ";"
 		}
 		if got, ok := seen[key]; ok {
 			return got
 		}
-		got := ask(prs)
+		got := ask(prs, inReview)
 		seen[key] = got
 		return got
 	}
