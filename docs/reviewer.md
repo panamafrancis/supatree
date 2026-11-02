@@ -168,8 +168,8 @@ There is nothing else to set up: the watcher that `supatree start` launches runs
 
 - **Reviews are posted in your name.** Without `approve: false` an approval it posts is *your* approval, and counts as one wherever branch protection asks for yours. Set `approve: false` and a `signature`, so your colleagues can tell its reviews from yours and approving stays your decision.
 - **It takes every request for your review**, `group_window` (5 minutes) after it arrives, including ones you meant to do yourself. It never posts on your own pull requests.
-- **It runs only while the watcher does.** Started by `supatree start`, the watcher exits once your last supatree session closes, and the reviewer stops with it. Requests that arrive meanwhile are picked up when it starts again.
-- **Reviews run in the background**, not in tabs: follow them in `watch.log` and `supatree reviewer status`. They count towards your `max_running_agents`.
+- **One watcher does both.** The watcher `supatree start` launches runs the reviewer next to everything else it does for your sessions — notifications, agent launches, PM nudges. While the reviewer is enabled it does not exit when your last session closes: it keeps reviewing, and serves the next session you open. To have it reviewing before you have started supatree at all, start `supatree watch` at login (a launchd agent, or a cron entry: a second watcher exits quietly while one is running).
+- **Reviews run in the background**, not in tabs: follow them with `supatree reviewer log -f` and `supatree reviewer status`. They count towards your `max_running_agents`.
 - Your own review trees (`supatree review`) are never touched; the reviewer only refreshes, runs in and removes the `rv-…` trees it made.
 
 Try it first with `enabled: false` and `supatree reviewer plan`, which shows what it would take on.
@@ -193,7 +193,7 @@ supatree watch --headless                   # runs until stopped; logs to stderr
 
 Remember to set `XDG_*`. Supatree reads them before `HOME`, so a value exported by your shell would point the bot at your own directories.
 
-`--headless` means the watcher needs no zellij session and never exits for want of one. To run it unattended, use launchd, systemd or `nohup`. A second `supatree watch` in the same home exits quietly, so starting it from cron every few minutes is a valid way to keep it alive.
+`--headless` makes the watcher a server: it never exits, logs to stderr and never touches zellij. (Without it, a watcher with the reviewer enabled also stays up, but it serves any supatree session you open — use that on a machine you work on.) To run it unattended, use launchd, systemd or `nohup`. A second `supatree watch` in the same home exits quietly, so starting it from cron every few minutes is a valid way to keep it alive.
 
 The log has a line for each thing the reviewer does: the account it posts as, each tree it creates or removes, each run starting and ending (with the path of the agent's own log, which you can `tail -f`), and each review confirmed on GitHub with its verdict and commit. After a round that changed something, it adds a summary:
 
@@ -292,11 +292,12 @@ The environment only seeds `config.yml` on first start. After that, the file on 
 supatree reviewer plan              # dry run: what it would do now, and how it groups the open pull requests
 supatree reviewer status            # every watched pull request: state, tree, last verdict, failures
 supatree reviewer forget acme/api#42 # clear what it remembers about one pull request (failures, give-up)
+supatree reviewer log -f            # its lines from watch.log, followed as they are written
 supatree ls                          # the reviewer's trees are listed under Reviews, named rv-<repo>-<n>
 supatree ps                          # running review agents
 ```
 
-- **The watcher's log** goes to stderr under `--headless`, otherwise to `~/.local/state/supatree/logs/watch.log`. It records every tree created, run started and finished, and every failure.
+- **The watcher's log** goes to stderr under `--headless`, otherwise to `~/.local/state/supatree/logs/watch.log`, whose reviewer lines `supatree reviewer log` picks out. It records every tree created, run started and finished, every verdict confirmed, every failure, and a summary whenever it changes.
 - **Run transcripts:** `~/.local/state/supatree/trees/<tree>/logs/reviewer-<time>.jsonl`, the agent's full stream.
 - **Notifications** go through `notify_command`:
   - `review_posted` is board tier: recorded, not pushed.

@@ -177,7 +177,8 @@ reviewer:
 ```
 
 ```sh
-supatree watch --headless      # no zellij needed; also SUPATREE_HEADLESS=1
+supatree watch --headless      # on a server: no zellij, logs to stderr; also SUPATREE_HEADLESS=1
+supatree reviewer log -f       # locally: follow what it does
 supatree reviewer status       # what it sees and what it did
 ```
 

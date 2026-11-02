@@ -30,9 +30,11 @@ var (
 	watchOnce    bool
 	watchSession string
 	watchQuiet   bool
-	// watchHeadless runs the watcher with no zellij: no session to outlive,
-	// no tabs to launch into, no panes to nudge. Set by --headless or
-	// SUPATREE_HEADLESS=1, for a container or a host with nobody logged in.
+	// watchHeadless runs the watcher as a server: it never exits for want of
+	// a session, logs to stderr, and leaves zellij alone — no tabs launched,
+	// no panes nudged. Set by --headless or SUPATREE_HEADLESS=1, for a
+	// container or a host nobody logs in to. Without it the watcher does all
+	// of that whenever a supatree session is up, and skips it while none is.
 	watchHeadless bool
 )
 
@@ -46,7 +48,12 @@ var watchCmd = &cobra.Command{
 		"It is a singleton: a second instance exits quietly rather than doubling the\n" +
 		"GitHub API load. `supatree start` spawns one automatically, so running this by\n" +
 		"hand is for debugging or for a cron entry that covers the hours when no\n" +
-		"session is open.",
+		"session is open.\n\n" +
+		"It exits once no supatree session is left, unless the automated reviewer is\n" +
+		"enabled: then it stays up and keeps reviewing, and serves the sessions you\n" +
+		"open later — launching their tabs and nudging their PMs — as a watcher\n" +
+		"`supatree start` spawned would. --headless is for a server: never exit, log to\n" +
+		"stderr, never touch zellij.",
 	RunE: func(cmd *cobra.Command, args []string) error {
 		leaveCallerDir()
 		if os.Getenv("SUPATREE_HEADLESS") == "1" {
@@ -97,6 +104,7 @@ func runWatch(ctx context.Context) error {
 	launchTicker := time.NewTicker(launchPollInterval)
 	defer launchTicker.Stop()
 	self := newBinaryWatch()
+	idle := false // no session left, staying up for the reviewer
 
 	if err := watchRound(ctx); err != nil {
 		logWatch("round failed: %v", err)
@@ -112,11 +120,22 @@ func runWatch(ctx context.Context) error {
 			// The daemon is spawned by `supatree start` and outlives its parent
 			// (start execs into zellij), so nothing else will ever reap it. Its
 			// own exit condition is the absence of the sessions it exists to
-			// serve — without this it polls GitHub forever. A headless watcher
-			// serves no session: it runs until it is stopped.
-			if !watchHeadless && !watchSessionsAlive() {
-				logWatch("no supatree sessions left — exiting")
-				return nil
+			// serve — without this it polls GitHub forever — unless the
+			// reviewer, which serves no session, is on. A headless watcher
+			// runs until it is stopped.
+			if !watchHeadless {
+				switch {
+				case watchSessionsAlive():
+					idle = false
+				case reviewerEnabled():
+					if !idle {
+						logWatch("no supatree sessions left — staying up for the reviewer")
+						idle = true
+					}
+				default:
+					logWatch("no supatree sessions left — exiting")
+					return nil
+				}
 			}
 			if self.replaced() {
 				restartWatcher(self.path)
@@ -474,7 +493,11 @@ func newLaunchGate(cfg *supatree.Config, insts []*supatree.Instance, now time.Ti
 // launches through, as the watcher did before it had a cap.
 func liveAgentTabs() map[string]bool {
 	live := map[string]bool{}
-	panes, err := zellij.ListPanes(watchSession)
+	session := servedSession()
+	if session == "" {
+		return live
+	}
+	panes, err := zellij.ListPanes(session)
 	if err != nil {
 		return live
 	}
@@ -492,10 +515,10 @@ func launchOne(ctx context.Context, exe string, r supatree.LaunchRequest) supatr
 	res := supatree.LaunchResult{Tree: r.Tree, Agent: r.Agent, Outcome: supatree.LaunchFailed}
 	session := r.Session
 	if session == "" {
-		session = watchSession
+		session = servedSession()
 	}
 	if session == "" {
-		res.Detail = "no zellij session to open it in (start the watcher with --session)"
+		res.Detail = "no supatree zellij session is open to launch it in"
 		logWatch("launch %s:%s: %s", r.Tree, r.Agent, res.Detail)
 		return res
 	}
@@ -679,16 +702,14 @@ func drainNotifyOutbox() []supatree.Event {
 // "", which suppresses nothing — deliberately, since a missed suppression is an
 // annoyance and a missed notification is a bug.
 func focusedTree() string {
-	if watchSession == "" {
+	// servedSession only names a session it has just seen alive: dump-layout
+	// sent to one that is shutting down makes zellij's server panic ("Failed
+	// to dump layout").
+	session := servedSession()
+	if session == "" {
 		return ""
 	}
-	// dump-layout sent to a session that is shutting down makes zellij's
-	// server panic ("Failed to dump layout"). The watcher only notices a dead
-	// session on its next tick, so check before asking.
-	if alive, err := zellij.SessionAlive(watchSession); err != nil || !alive {
-		return ""
-	}
-	tab := zellij.FocusedTab(watchSession)
+	tab := zellij.FocusedTab(session)
 	if tab == "" {
 		return ""
 	}
@@ -698,20 +719,70 @@ func focusedTree() string {
 
 // watchSessionsAlive reports whether any supatree zellij session is still up.
 func watchSessionsAlive() bool {
-	sessions, err := zellij.ListSessions()
+	live, err := liveSessions()
 	if err != nil {
 		// Treat an unreadable session list as "still alive": exiting on a
 		// transient zellij error would silently stop notifications for the rest
 		// of the day, which is far worse than one extra round of polling.
 		return true
 	}
+	return len(live) > 0
+}
+
+// liveSessions lists the supatree zellij sessions that are up.
+func liveSessions() ([]string, error) {
+	sessions, err := zellij.ListSessions()
+	if err != nil {
+		return nil, err
+	}
 	prefix := supatreeWorkspace().SessionPrefix
+	var live []string
 	for _, s := range sessions {
 		if strings.HasPrefix(s.Name, prefix) && !s.Exited {
-			return true
+			live = append(live, s.Name)
 		}
 	}
-	return false
+	return live, nil
+}
+
+// servedSession is the supatree session the watcher serves now — for a
+// launch that names none, the busy-agent count and focus suppression: the one
+// it was started for (--session) while that is up, else any that is. A
+// watcher that outlived its session, or was started before any, so serves
+// whichever you open next. "" while none is up, and always for a headless
+// watcher, which leaves zellij alone.
+func servedSession() string {
+	if watchHeadless {
+		return ""
+	}
+	live, err := liveSessions()
+	if err != nil {
+		return ""
+	}
+	return pickSession(watchSession, live)
+}
+
+// pickSession prefers the session the watcher was started for, else the
+// first live one.
+func pickSession(own string, live []string) string {
+	for _, s := range live {
+		if s == own {
+			return s
+		}
+	}
+	if len(live) > 0 {
+		return live[0]
+	}
+	return ""
+}
+
+// reviewerEnabled reports whether the config turns the reviewer on — the one
+// reason for a watcher to outlive every session.
+func reviewerEnabled() bool {
+	// Enabled, not Resolve: a reviewer block with a mistake in it is still
+	// one someone wants running, and the round logs what the mistake is.
+	cfg, err := supatree.Load()
+	return err == nil && cfg.Reviewer != nil && cfg.Reviewer.Enabled
 }
 
 // watchLogMax is the size at which watch.log is rotated to watch.log.1. One
@@ -780,7 +851,7 @@ func logWatch(format string, args ...any) {
 
 func init() {
 	watchCmd.Flags().BoolVar(&watchOnce, "once", false, "run a single round and exit (for cron or scripts)")
-	watchCmd.Flags().StringVar(&watchSession, "session", "", "zellij session to consult for the focused tab")
+	watchCmd.Flags().StringVar(&watchSession, "session", "", "zellij session to serve first, while it is up (otherwise any supatree session that is)")
 	watchCmd.Flags().BoolVar(&watchQuiet, "quiet", false, "exit silently when another watcher holds the lock")
-	watchCmd.Flags().BoolVar(&watchHeadless, "headless", false, "run without zellij: never exit for want of a session, launch no tabs, log to stderr (also SUPATREE_HEADLESS=1)")
+	watchCmd.Flags().BoolVar(&watchHeadless, "headless", false, "run as a server: never exit for want of a session, log to stderr, never touch zellij (also SUPATREE_HEADLESS=1)")
 }

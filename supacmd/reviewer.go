@@ -21,8 +21,9 @@ var reviewerCmd = &cobra.Command{
 	Long: "The automated reviewer picks up pull requests that request a review from\n" +
 		"`reviewer.login`, groups the ones that make up one cross-repo change, reviews\n" +
 		"each group in a review tree of its own with a headless agent, and re-reviews\n" +
-		"when asked. It runs inside `supatree watch` (use --headless where there is no\n" +
-		"zellij); these commands only inspect and correct what it remembers.",
+		"when asked. It runs inside `supatree watch`, which stays up while it is enabled\n" +
+		"(use --headless on a server with no zellij); these commands inspect it and\n" +
+		"correct what it remembers.",
 }
 
 var reviewerStatusCmd = &cobra.Command{
