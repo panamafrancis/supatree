@@ -168,6 +168,22 @@ Remember to set `XDG_*`. Supatree reads them before `HOME`, so a value exported 
 
 `--headless` means the watcher needs no zellij session and never exits for want of one. To run it unattended, use launchd, systemd or `nohup`. A second `supatree watch` in the same home exits quietly, so starting it from cron every few minutes is a valid way to keep it alive.
 
+The log has a line for each thing the reviewer does: the account it posts as, each tree it creates or removes, each run starting and ending (with the path of the agent's own log, which you can `tail -f`), and each review confirmed on GitHub with its verdict and commit. After a round that changed something, it adds a summary:
+
+```
+reviewer: posting as @review-bot
+reviewer: 2 pull requests waiting, next due 14:05
+reviewer: created rv-billing-api for acme/api#41, acme/web#87
+reviewer: reviewing acme/api#41, acme/web#87 in rv-billing-api
+reviewer: 2 pull requests waiting, 1 review running
+reviewer: rv-billing-api: agent exited 0 after 7m40s (log …/reviewer-….jsonl)
+reviewer: rv-billing-api: acme/api#41 changes requested at 3f9c2a1d8e04 (https://github.com/…)
+reviewer: rv-billing-api: acme/web#87 approved at 81b0e7c4a9d2 (https://github.com/…)
+reviewer: nothing waiting
+```
+
+A round that changes nothing logs nothing.
+
 Before switching it on, try the configuration with `enabled: false`:
 
 ```sh

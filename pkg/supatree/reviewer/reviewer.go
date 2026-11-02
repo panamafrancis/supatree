@@ -33,6 +33,7 @@ type Reviewer struct {
 	login   string          // the gh account, once verified
 	related map[string][][]string
 	wg      sync.WaitGroup
+	summary string // the last summary logged
 }
 
 // Wait blocks until every run this Reviewer started has finished.
@@ -72,9 +73,11 @@ func (r *Reviewer) Round(ctx context.Context, cfg *supatree.Config, cache *githu
 		related = r.memoRelated(llmGrouper(cfg, s, r.logf))
 	}
 	var actions []Action
+	var planned *State
 	if err := MutateState(func(st *State) error {
 		actions = Plan(snap, st, s, related)
-		return nil
+		planned, err = copyState(st)
+		return err
 	}); err != nil {
 		r.logf("reviewer: state: %v", err)
 		return
@@ -93,6 +96,27 @@ func (r *Reviewer) Round(ctx context.Context, cfg *supatree.Config, cache *githu
 		case ActRun:
 			r.start(ctx, cfg, s, snap, a)
 		}
+	}
+	r.logSummary(snap, planned, s)
+}
+
+// logSummary logs where the reviewer stands, if that changed since the last
+// round, counting the runs this round started.
+func (r *Reviewer) logSummary(snap Snapshot, st *State, s Settings) {
+	snap.Running = map[string]bool{}
+	r.mu.Lock()
+	for name, on := range r.running {
+		snap.Running[name] = on
+	}
+	r.mu.Unlock()
+	for _, p := range supatree.ListProcs() {
+		if p.Headless && p.Agent == AgentName && snap.Trees[p.Tree] != nil {
+			snap.Running[p.Tree] = true
+		}
+	}
+	if line := summarize(snap, st, s); line != r.summary {
+		r.summary = line
+		r.logf("%s", line)
 	}
 }
 
@@ -176,6 +200,7 @@ func (r *Reviewer) checkIdentity(login string) error {
 		return fmt.Errorf("gh is authenticated as %s, but reviewer.login is %s — reviews would be posted as the wrong account", got, login)
 	}
 	r.login = login
+	r.logf("reviewer: posting as @%s", login)
 	return nil
 }
 
@@ -406,12 +431,13 @@ func (r *Reviewer) run(ctx context.Context, cfg *supatree.Config, s Settings, sn
 		}
 		return nil
 	})
-	for k, rev := range posted {
-		p := snap.PRs[k]
+	for _, k := range sortedKeys(posted) {
+		rev, p := posted[k], snap.PRs[k]
+		r.logf("reviewer: %s: %s %s at %s (%s)", a.Tree, k, verdictText(rev.State), short(rev.CommitID), rev.URL)
 		_ = supatree.AppendNotification(supatree.Event{
 			Kind: supatree.EventReviewPosted, Tree: a.Tree, Mode: supatree.ModeReviewing,
 			Member: p.Alias, PR: p.Number,
-			Text: fmt.Sprintf("@%s %s %s#%d", s.Login, strings.ToLower(strings.ReplaceAll(rev.State, "_", " ")), p.Repo, p.Number),
+			Text: fmt.Sprintf("@%s %s %s#%d", s.Login, verdictText(rev.State), p.Repo, p.Number),
 		})
 	}
 	if len(missing) > 0 {
