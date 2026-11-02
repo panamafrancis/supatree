@@ -181,6 +181,8 @@ supatree watch --headless      # no zellij needed; also SUPATREE_HEADLESS=1
 supatree reviewer status       # what it sees and what it did
 ```
 
+It can also run under your own account, in your own supatree, reviewing the pull requests that request your review: set `login` to yourself, `approve: false` to keep approving yourself, and a `signature` so its reviews are marked as automated.
+
 Setup, configuration, running it locally, and an example container image and Kubernetes manifests: **[docs/reviewer.md](docs/reviewer.md)**.
 
 ## The PM agent

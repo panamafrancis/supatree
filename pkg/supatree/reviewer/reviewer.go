@@ -380,7 +380,7 @@ func (r *Reviewer) run(ctx context.Context, cfg *supatree.Config, s Settings, sn
 	// Whatever is left in the mailbox is from a run that did not finish, or
 	// AddReview's note; this brief supersedes all of it.
 	_, _ = supatree.Drain(inst.Root, AgentName)
-	brief := briefFor(inst, s.Login, a.PRs, st, guidanceFor(inst, s, st.Trees[a.Tree], r.logf))
+	brief := briefFor(inst, s.Login, s.Approve, a.PRs, st, guidanceFor(inst, s, st.Trees[a.Tree], r.logf))
 	if err := supatree.Deliver(inst.Root, AgentName, AgentName, brief); err != nil {
 		r.failed(s, a.PRs, a.Tree, err)
 		return

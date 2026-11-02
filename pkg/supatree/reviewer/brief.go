@@ -17,8 +17,10 @@ type briefPR struct {
 // Brief is what the reviewer's agent is told to do in one run. Every word
 // of it is supatree's own, the URLs and commit IDs (GitHub's) and the
 // maintainers' guidance (see guidance.go): no title, description or branch
-// name an author wrote reaches it.
-func Brief(login string, toReview, context []briefPR, g Guidance) string {
+// name an author wrote reaches it. approve is whether the reviewer may
+// approve; when it may not, review_post turns an APPROVE into a COMMENT
+// anyway, and the brief says so only so the review body reads right.
+func Brief(login string, approve bool, toReview, context []briefPR, g Guidance) string {
 	var b strings.Builder
 	fmt.Fprintf(&b, "You are the automated reviewer, posting as the GitHub account @%s. "+
 		"No human is watching this run: do the whole review, end to end, without waiting for input, then stop.\n\n", login)
@@ -37,14 +39,19 @@ func Brief(login string, toReview, context []briefPR, g Guidance) string {
 			fmt.Fprintf(&b, "- %s: %s\n", p.Alias, p.URL)
 		}
 	}
+	verdict := `   - APPROVE when nothing blocks — on a re-review, when everything you raised as blocking is fixed and nothing new blocks.
+`
+	if !approve {
+		verdict = `   - COMMENT, saying nothing blocks, when nothing blocks — on a re-review, when everything you raised as blocking is fixed and nothing new blocks. You may not APPROVE: approving is left to a person.
+`
+	}
 	b.WriteString(`
 1. Call ` + "`docs`" + ` with topic ` + "`review`" + ` and follow it.
 2. Call ` + "`pr_comments`" + ` for each repo. On a re-review, find everything you (@` + login + `) said before — reviews and inline threads — and check each point against the current head: fixed, not fixed, or no longer applies.
 3. Build, lint and test each repo here, and do the cross-repo check.
 4. Write the review to .supatree/review.md: one section per pull request, blocking findings separate from non-blocking ones, every line number taken from the pull request head. On a re-review, rewrite it; do not append.
 5. Post exactly one review for each pull request waiting on you, with ` + "`review_post`" + `, and none on any other:
-   - APPROVE when nothing blocks — on a re-review, when everything you raised as blocking is fixed and nothing new blocks.
-   - REQUEST_CHANGES when something blocks, with each blocking finding as an inline comment.
+` + verdict + `   - REQUEST_CHANGES when something blocks, with each blocking finding as an inline comment.
    - Never APPROVE while the pull request's checks are failing (` + "`gh pr checks <url>`" + `): post COMMENT, naming the failing checks, unless something else blocks.
    Say in the review body which findings block and which do not.
 6. If ` + "`review_post`" + ` refuses because the author has pushed, call ` + "`review_refresh`" + `, re-check what you found against the new head, and post then.
@@ -64,7 +71,7 @@ func short(sha string) string {
 }
 
 // briefFor builds the brief for a run over keys in inst.
-func briefFor(inst *supatree.Instance, login string, keys []string, st *State, g Guidance) string {
+func briefFor(inst *supatree.Instance, login string, approve bool, keys []string, st *State, g Guidance) string {
 	want := map[string]bool{}
 	for _, k := range keys {
 		want[k] = true
@@ -85,5 +92,5 @@ func briefFor(inst *supatree.Instance, login string, keys []string, st *State, g
 			context = append(context, bp)
 		}
 	}
-	return Brief(login, toReview, context, g)
+	return Brief(login, approve, toReview, context, g)
 }

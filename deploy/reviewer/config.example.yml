@@ -32,3 +32,7 @@ reviewer:
   # guidance: |
   #   Treat missing tests for new behaviour as blocking.
   # guidance_file: review-advice.md
+  # Leave approving to a person: nothing blocking is posted as COMMENT.
+  # approve: false
+  # Appended to every review, so readers can tell it from a person's.
+  # signature: "_Automated review by supatree._"

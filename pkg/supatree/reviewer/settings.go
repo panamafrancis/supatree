@@ -54,6 +54,8 @@ type Settings struct {
 	// Guidance is the operator's review advice: guidance, then the contents
 	// of guidance_file.
 	Guidance string
+	// Approve is whether the reviewer may post APPROVE (reviewer.approve).
+	Approve bool
 }
 
 // ErrDisabled is a config with the reviewer off or absent.
@@ -84,6 +86,7 @@ func ResolveConfigured(c *supatree.Config) (Settings, error) {
 		LLMGrouping:   r.LLMGrouping,
 		MaxConcurrent: r.MaxConcurrent,
 		MaxAttempts:   r.MaxAttempts,
+		Approve:       r.Approves(),
 	}
 	var err error
 	if s.GroupWindow, err = duration("group_window", r.GroupWindow, DefaultGroupWindow); err != nil {

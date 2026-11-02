@@ -101,6 +101,18 @@ type ReviewerSettings struct {
 	// to supatree's config directory; both may be set.
 	Guidance     string `yaml:"guidance,omitempty"`
 	GuidanceFile string `yaml:"guidance_file,omitempty"`
+	// Approve lets the reviewer approve. Off, a review with nothing blocking
+	// is posted as COMMENT, so approving stays with a person — the setting for
+	// a reviewer that posts under that person's own account. Unset is on.
+	Approve *bool `yaml:"approve,omitempty"`
+	// Signature is appended to the body of every review the reviewer posts,
+	// so a reader can tell an automated review from a person's.
+	Signature string `yaml:"signature,omitempty"`
+}
+
+// Approves reports whether the reviewer may post APPROVE.
+func (r *ReviewerSettings) Approves() bool {
+	return r == nil || r.Approve == nil || *r.Approve
 }
 
 // RepoSettings are one repo's personal, machine-local settings.

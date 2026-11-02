@@ -327,7 +327,7 @@ func TestParseWatchKey(t *testing.T) {
 }
 
 func TestBriefCarriesNoAuthorText(t *testing.T) {
-	b := Brief(bot,
+	b := Brief(bot, true,
 		[]briefPR{{Alias: apiAlias, URL: "https://github.com/o/api/pull/1", LastHead: "0123456789abcdef"}},
 		[]briefPR{{Alias: "web", URL: "https://github.com/o/web/pull/2"}}, Guidance{})
 	for _, want := range []string{"@" + bot, "re-review", "git -C repos/api diff 0123456789abcdef..HEAD", "post nothing on them", "o/web/pull/2"} {
@@ -405,5 +405,12 @@ func TestDryRunAsksRelatedOnce(t *testing.T) {
 	}
 	if asked != 1 {
 		t.Errorf("related asked %d times, want once", asked)
+	}
+}
+
+func TestBriefWithoutApproval(t *testing.T) {
+	b := Brief(bot, false, []briefPR{{Alias: apiAlias, URL: "https://github.com/o/api/pull/1"}}, nil, Guidance{})
+	if strings.Contains(b, "- APPROVE when") || !strings.Contains(b, "You may not APPROVE") {
+		t.Errorf("brief still offers APPROVE:\n%s", b)
 	}
 }

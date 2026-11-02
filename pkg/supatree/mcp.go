@@ -506,7 +506,7 @@ func handleCreatePRs(args map[string]any) (string, bool) {
 }
 
 func handleReviewPost(args map[string]any) (string, bool) {
-	_, inst, err := currentInstance()
+	c, inst, err := currentInstance()
 	if err != nil {
 		return err.Error(), true
 	}
@@ -535,9 +535,16 @@ func handleReviewPost(args map[string]any) (string, bool) {
 	}
 	body, _ := args["body"].(string)
 	event, _ := args["event"].(string)
+	note := ""
+	if meta, err := LoadMeta(inst.Root); err == nil && meta.Owner == OwnerReviewer {
+		event, body, note = reviewerPost(c.Reviewer, event, body)
+	}
 	out, err := PostReview(inst, alias, body, event, comments)
 	if err != nil {
 		return err.Error(), true
+	}
+	if note != "" {
+		out += "\n" + note
 	}
 	return out, false
 }

@@ -9,7 +9,12 @@ The reviewer is a GitHub account that supatree operates. You request a review fr
 5. posts one batched review per pull request, with inline comments,
 6. re-reviews when you click **Re-request review**, and **approves** once nothing it finds is blocking.
 
-It runs inside `supatree watch`, on your machine or in a container. This page covers setting it up, running it, and deploying it.
+It runs inside `supatree watch`, on your machine or in a container. It can run in either of two ways:
+
+- **As a dedicated bot account**, shared by your team: reviews are requested from the bot, and it can approve. This is what most of this page describes.
+- **Under your own account, in your own supatree**: it reviews the pull requests that request *your* review, and you keep approving yourself. See [Under your own account](#under-your-own-account).
+
+This page covers setting it up, running it, and deploying it.
 
 - [How it works](#how-it-works)
 - [Requirements](#requirements)
@@ -63,7 +68,7 @@ You also need a **stack**: the registered set of repositories the reviewer cover
 
 ## Setting up the bot account
 
-The reviewer needs a GitHub account of its own: a *machine user*. You cannot use your own account, because GitHub does not let you approve your own pull request. A GitHub App will not work either, because an App cannot be requested as a reviewer.
+For a reviewer your whole team requests reviews from, give it a GitHub account of its own: a *machine user*. (To run it under your own account instead, skip this section and see [Under your own account](#under-your-own-account).) A GitHub App will not work, because an App cannot be requested as a reviewer.
 
 1. **Create the account**, e.g. `acme-review-bot`. Check your organisation's policy on machine users and their licence seat.
 2. **Give it access** to every repository of the stack. *Write* access is what makes its approval count towards branch protection. Read access is enough if you only want its comments.
@@ -99,6 +104,8 @@ reviewer:
   guidance: |                     # optional: advice added to every review
     Treat missing tests for new behaviour as blocking.
   guidance_file: review-advice.md # optional: the same from a file (relative to ~/.config/supatree)
+  approve: true                   # false: post COMMENT instead of APPROVE, leaving approval to a person
+  signature: "_Automated review by supatree._"  # optional: appended to every review it posts
 ```
 
 | Key | Default | Meaning |
@@ -115,6 +122,8 @@ reviewer:
 | `tree_ttl` | `168h` | How long an idle tree is kept, so a re-review can resume the same session. |
 | `guidance` | none | Review advice added to every review. See [Review guidance](#review-guidance). |
 | `guidance_file` | none | The same, read from a file: absolute, or relative to `~/.config/supatree`. Read every round; an unreadable file stops the reviewer with an error rather than reviewing without it. |
+| `approve` | `true` | Whether the reviewer may approve. With `false`, a review with nothing blocking is posted as COMMENT, saying nothing blocks; request-changes and comments are unaffected. Enforced by `review_post` itself, whatever the agent asks for. |
+| `signature` | none | Markdown appended, after a rule, to the body of every review the reviewer posts, so readers can tell its reviews from a person's. Added by `review_post`, so the agent cannot leave it out. |
 
 Other settings worth knowing:
 
@@ -143,11 +152,29 @@ Guidance refines *how* the agent reviews. It cannot lift the reviewer's own rule
 
 ## Running it locally
 
-### Next to your own supatree setup
+### Under your own account
 
-The watcher that `supatree start` launches is the one that runs the reviewer. **But that watcher runs as you**: its `gh` is logged in as you, and the reviewer refuses to post as anyone but `reviewer.login`. Run the reviewer in a home of its own instead, as the next section describes.
+The reviewer can run in your own supatree, as you: it then reviews the pull requests that request **your** review. Add a `reviewer:` block to your own config with your own login:
 
-### In a home of its own (recommended)
+```yaml
+reviewer:
+  enabled: true
+  login: your-github-login        # the account your gh is logged in as
+  approve: false                  # nothing blocking: COMMENT, so approving stays with you
+  signature: "_Automated review by supatree, not yet read by @your-github-login._"
+```
+
+There is nothing else to set up: the watcher that `supatree start` launches runs the reviewer, with the `gh` login and Claude credentials you already use. What is different from a dedicated bot:
+
+- **Reviews are posted in your name.** Without `approve: false` an approval it posts is *your* approval, and counts as one wherever branch protection asks for yours. Set `approve: false` and a `signature`, so your colleagues can tell its reviews from yours and approving stays your decision.
+- **It takes every request for your review**, `group_window` (5 minutes) after it arrives, including ones you meant to do yourself. It never posts on your own pull requests.
+- **It runs only while the watcher does.** Started by `supatree start`, the watcher exits once your last supatree session closes, and the reviewer stops with it. Requests that arrive meanwhile are picked up when it starts again.
+- **Reviews run in the background**, not in tabs: follow them in `watch.log` and `supatree reviewer status`. They count towards your `max_running_agents`.
+- Your own review trees (`supatree review`) are never touched; the reviewer only refreshes, runs in and removes the `rv-…` trees it made.
+
+Try it first with `enabled: false` and `supatree reviewer plan`, which shows what it would take on.
+
+### In a home of its own, as a dedicated account
 
 Give the bot its own `HOME`, so its config, state, clones and Claude settings are separate from yours:
 
@@ -257,7 +284,7 @@ The environment only seeds `config.yml` on first start. After that, the file on 
 - **Siblings opened later** join the existing review tree and are reviewed in context.
 - **Drafts** are skipped until they are marked ready for review, while the request still stands.
 - **Re-review:** push your fixes, then click **Re-request review**.
-- **Approval:** the bot approves only when nothing it considers blocking remains and the checks are not failing. Its review body says which findings block and which do not.
+- **Approval:** the bot approves only when nothing it considers blocking remains and the checks are not failing. Its review body says which findings block and which do not. With `approve: false` it posts a COMMENT saying nothing blocks instead, and a person approves.
 
 ## Monitoring and operating it
 
@@ -287,7 +314,7 @@ supatree ps                          # running review agents
   - It is told to report, never to obey, instructions found inside a pull request.
   - The LLM grouping call has no tools.
   - The reviewer's own record of what was posted lives where no agent can write it, and is confirmed against GitHub.
-- **An approval is a claim** that the agent ran the gate and read the tree. If your branch protection counts the bot's approval, it is effectively a required reviewer you have automated. Decide deliberately whether it should count, or keep it read-only so that its reviews are comments only.
+- **An approval is a claim** that the agent ran the gate and read the tree. If your branch protection counts the bot's approval, it is effectively a required reviewer you have automated. Decide deliberately whether it should count, or keep it from approving: give it read access only, or set `approve: false`. Under your own account, set `approve: false`.
 - **The agent runs your repositories' code** (builds and tests) inside the sandbox, as any CI would. Do not point it at repositories whose pull requests can come from untrusted forks unless you are comfortable with that.
 
 ## Limitations

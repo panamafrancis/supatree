@@ -111,3 +111,23 @@ func ParseReviewComments(raw string) ([]ReviewComment, error) {
 	}
 	return out, nil
 }
+
+// reviewerPost applies the reviewer's settings to a review its agent posts in
+// one of its own trees: APPROVE becomes COMMENT when it may not approve, and
+// the signature is appended. Enforced here, not left to the brief, because
+// the agent's reading of its brief is not a guarantee. note says what changed.
+func reviewerPost(r *ReviewerSettings, event, body string) (outEvent, outBody, note string) {
+	if strings.EqualFold(event, "APPROVE") && !r.Approves() {
+		event = "COMMENT"
+		note = "posted as COMMENT, not APPROVE: reviewer.approve is off, so approving is left to a person"
+	}
+	if r != nil {
+		if sig := strings.TrimSpace(r.Signature); sig != "" {
+			if strings.TrimSpace(body) != "" {
+				body = strings.TrimRight(body, "\n") + "\n\n---\n"
+			}
+			body += sig
+		}
+	}
+	return event, body, note
+}
