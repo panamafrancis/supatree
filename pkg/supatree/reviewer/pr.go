@@ -1,7 +1,6 @@
 package reviewer
 
 import (
-	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -47,23 +46,7 @@ func PRKey(repo string, number int) string {
 // WatchTargets are the fetch targets that keep the reviewer's pull requests
 // in the cache: one per watched repository that supatree has a clone of.
 func WatchTargets(c *supatree.Config, s Settings) []github.Target {
-	var targets []github.Target
-	seen := map[string]bool{}
-	for _, stack := range s.WatchedStacks(c) {
-		repos, err := c.StackRepos(stack)
-		if err != nil {
-			continue
-		}
-		for repo, sr := range repos {
-			if sr.Clone == "" || seen[repo] {
-				continue
-			}
-			seen[repo] = true
-			targets = append(targets, github.Target{RepoPath: sr.Clone, Watch: s.Login})
-		}
-	}
-	sort.Slice(targets, func(i, j int) bool { return targets[i].RepoPath < targets[j].RepoPath })
-	return targets
+	return supatree.WatchTargetsFor(c, s.Login, s.WatchedStacks(c))
 }
 
 // stackRepo is a watched repository with the stack it belongs to. A

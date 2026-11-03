@@ -171,7 +171,18 @@ func watchRound(ctx context.Context) error {
 		logWatch("reviewer: %v", err)
 	}
 	if !cache.InBackoff(github.ResourceCore, time.Now()) {
-		if out := supatree.FetchPRs(targets, cache, false); out.Err != nil {
+		out := supatree.FetchPRs(targets, cache, false)
+		if out.Skipped && time.Since(lastOwnFetch) > maxCededFetch {
+			// Another process has won every round for a while. Theirs carry
+			// the reviewer's targets too, but one still on an older binary
+			// does not, and the reviewer would act on a listing that never
+			// moves. Wait for the lock instead.
+			out = supatree.FetchPRsWaiting(targets, cache)
+		}
+		if !out.Skipped {
+			lastOwnFetch = time.Now()
+		}
+		if out.Err != nil {
 			// A failed fetch is not a failed round: the summary below is still
 			// derivable from local git plus whatever the cache already holds.
 			logWatch("PR fetch incomplete: %v", out.Err)
@@ -207,6 +218,13 @@ func watchRound(ctx context.Context) error {
 	}
 	return nil
 }
+
+// lastOwnFetch is when this watcher last ran a fetch round itself rather than
+// ceding it to another process; maxCededFetch is how long it cedes before it
+// waits for the lock instead.
+var lastOwnFetch time.Time
+
+const maxCededFetch = 2 * time.Minute
 
 // theReviewer is the watcher's automated reviewer (pkg/supatree/reviewer). Its
 // tree operations share the op lock, so they never interleave with the op
