@@ -2,6 +2,7 @@ package supatree
 
 import (
 	"errors"
+	"sort"
 	"time"
 
 	"github.com/panamafrancis/workbench/pkg/github"
@@ -34,6 +35,64 @@ func FetchTargets(insts []*Instance) []github.Target {
 	return targets
 }
 
+// WatchTargetsFor are the fetch targets that keep login's review requests in
+// the cache: one per repository of stacks that supatree has a clone of.
+func WatchTargetsFor(c *Config, login string, stacks []string) []github.Target {
+	var targets []github.Target
+	seen := map[string]bool{}
+	for _, stack := range stacks {
+		repos, err := c.StackRepos(stack)
+		if err != nil {
+			continue
+		}
+		for repo, sr := range repos {
+			if sr.Clone == "" || seen[repo] {
+				continue
+			}
+			seen[repo] = true
+			targets = append(targets, github.Target{RepoPath: sr.Clone, Watch: login})
+		}
+	}
+	sort.Slice(targets, func(i, j int) bool { return targets[i].RepoPath < targets[j].RepoPath })
+	return targets
+}
+
+// reviewerWatchTargets are the enabled reviewer's watch targets, or none.
+func reviewerWatchTargets(c *Config) []github.Target {
+	r := c.Reviewer
+	if r == nil || !r.Enabled || r.Login == "" {
+		return nil
+	}
+	stacks := r.Stacks
+	if len(stacks) == 0 {
+		stacks = c.StackAliases()
+	}
+	return WatchTargetsFor(c, r.Login, stacks)
+}
+
+// withReviewerWatch adds the reviewer's watch targets to a round's, unless
+// the round has them already. Every process's round carries them, not only
+// the watcher's: the round goes to whichever process takes the cache lock
+// first, and one that polled a repo without them would consume its change —
+// the next poll a 304 — while the watcher, ceding round after round to the
+// sidebars, never saw a re-request at all.
+func withReviewerWatch(targets []github.Target, c *Config) []github.Target {
+	have := map[github.Target]bool{}
+	for _, t := range targets {
+		if t.Watch != "" {
+			have[t] = true
+		}
+	}
+	for _, t := range reviewerWatchTargetsFn(c) {
+		if !have[t] {
+			targets = append(targets, t)
+		}
+	}
+	return targets
+}
+
+var reviewerWatchTargetsFn = reviewerWatchTargets
+
 // FetchOutcome reports what a fetch round did. Skipped means another process
 // owned the round (the cache lock was busy) and this one ceded — distinct from
 // an error, and from a successful but empty round. Deferred counts lookups held
@@ -55,6 +114,20 @@ type FetchOutcome struct {
 // force re-polls unconditionally and ignores staleness, for a person waiting
 // on an explicit refresh; it still blocks on the lock rather than ceding.
 func FetchPRs(targets []github.Target, cache *github.Cache, force bool) FetchOutcome {
+	return fetchPRs(targets, cache, force, force)
+}
+
+// FetchPRsWaiting is FetchPRs waiting for the cache lock rather than ceding,
+// without forcing a re-read: for a process whose own targets have gone
+// unfetched too long while others won every round.
+func FetchPRsWaiting(targets []github.Target, cache *github.Cache) FetchOutcome {
+	return fetchPRs(targets, cache, false, true)
+}
+
+func fetchPRs(targets []github.Target, cache *github.Cache, force, wait bool) FetchOutcome {
+	if c, err := Load(); err == nil {
+		targets = withReviewerWatch(targets, c)
+	}
 	if len(targets) == 0 {
 		return FetchOutcome{}
 	}
@@ -64,7 +137,7 @@ func FetchPRs(targets []github.Target, cache *github.Cache, force bool) FetchOut
 		return nil
 	}
 	var err error
-	if force {
+	if wait {
 		err = cache.Mutate(round)
 	} else {
 		err = cache.TryMutate(round)

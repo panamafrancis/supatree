@@ -95,6 +95,7 @@ func fetchGit(jail gitJail, repo string, args ...string) (string, error) {
 	}
 	cmd.Stdin = nil
 	cmd.Env = append(envOf(cmd), "GIT_TERMINAL_PROMPT=0")
+	cmd.WaitDelay = netWaitDelay
 	out, err := cmd.CombinedOutput()
 	return strings.TrimSpace(string(out)), err
 }

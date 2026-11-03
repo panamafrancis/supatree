@@ -165,6 +165,28 @@ Press `D` in the supatree sidebar to open or focus the dashboard in a `supatree-
 
 Unlike `supatree status`, this one costs API quota. Thread resolution exists only in GitHub's GraphQL API, so it is a second query shape per PR on top of the one the sidebar already spends. It is therefore fetched **only when asked for, never on a timer**, and cached until the PR itself changes — so asking twice about an unchanged PR is free. Agents get the same thing as the `pr_comments` MCP tool.
 
+## Automated reviewer
+
+Supatree can run a review bot: a GitHub account of its own that you request reviews from like a colleague. The watcher notices each request, groups the pull requests of one cross-repo change (`create_prs` marks them for it), reviews them together in a review tree with a headless agent that builds and tests every repo, posts one review per pull request, re-reviews on **Re-request review**, and approves once nothing it finds is blocking.
+
+```yaml
+# ~/.config/supatree/config.yml — in a home of the bot's own, with gh logged in as it
+reviewer:
+  enabled: true
+  login: acme-review-bot
+```
+
+```sh
+supatree watch --headless      # on a server: no zellij, logs to stderr; also SUPATREE_HEADLESS=1
+supatree reviewer log -f       # locally: follow what it does
+supatree reviewer watch <tree> # one review as it runs
+supatree reviewer status       # what it sees and what it did
+```
+
+It can also run under your own account, in your own supatree, reviewing the pull requests that request your review: set `login` to yourself, `approve: false` to keep approving yourself, and a `signature` so its reviews are marked as automated.
+
+Setup, configuration, running it locally, and an example container image and Kubernetes manifests: **[docs/reviewer.md](docs/reviewer.md)**.
+
 ## The PM agent
 
 `supatree pm` (or `P` in the sidebar) opens a standing agent rooted at `~/.local/state/supatree/pm` that can see every supatree at once: what is blocked, what reviewers said, who is working where. It is **optional** — nothing else depends on it running, and without it supatree behaves exactly as it does today.

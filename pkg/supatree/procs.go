@@ -38,6 +38,9 @@ type ProcRecord struct {
 	SessionID string    `json:"session_id,omitempty"`
 	Cwd       string    `json:"cwd,omitempty"`
 	Started   time.Time `json:"started"`
+	// Headless is a run with no terminal (RunHeadless): it has no tab, and
+	// counts against the launch cap by existing.
+	Headless bool `json:"headless,omitempty"`
 }
 
 // IsPM reports whether the record is a PM's.
@@ -80,6 +83,8 @@ func procRecordFromEnv(args []string) ProcRecord {
 		Member:  os.Getenv("SUPATREE_MEMBER"),
 		Session: os.Getenv("ZELLIJ_SESSION_NAME"),
 		Started: time.Now().UTC(),
+		// Set only by RunHeadless, which also strips every ZELLIJ variable.
+		Headless: os.Getenv(HeadlessEnv) == "headless",
 	}
 	if os.Getenv("SUPATREE_PM") == "1" {
 		r.PM = os.Getenv("SUPATREE_PM_NAME")

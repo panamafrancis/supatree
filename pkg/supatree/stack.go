@@ -371,6 +371,14 @@ func publishStackEdit(origin, file, message string, edit func(dir string) error)
 // request behind it.
 const stackNetTimeout = 5 * time.Minute
 
+// netWaitDelay bounds how long a timed-out network git command's output is
+// still waited for. The timeout kills git (or the nono wrapping it), but not
+// what it started — git-remote-https, or git itself under nono — and those
+// hold the output pipe open for as long as their stalled connection lasts:
+// without it a fetch's timeout ends nothing, and the op holding the
+// watcher's op lock never returns.
+const netWaitDelay = 10 * time.Second
+
 // netGit runs a git command that talks to a remote: bounded, and never
 // stopping to ask for credentials. It returns the trimmed combined output.
 func netGit(dir string, args ...string) (string, error) {
@@ -382,6 +390,7 @@ func netGit(dir string, args ...string) (string, error) {
 	cmd := exec.CommandContext(ctx, "git", args...)
 	cmd.Stdin = nil
 	cmd.Env = append(os.Environ(), "GIT_TERMINAL_PROMPT=0")
+	cmd.WaitDelay = netWaitDelay
 	out, err := cmd.CombinedOutput()
 	return strings.TrimSpace(string(out)), err
 }

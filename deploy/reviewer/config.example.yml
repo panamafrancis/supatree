@@ -1,0 +1,42 @@
+# Example ~/.config/supatree/config.yml for a dedicated reviewer.
+# See docs/reviewer.md for every setting. The watcher re-reads this file every
+# round, so edits take effect without a restart.
+#
+# `stacks:` is filled in by `supatree stack clone <url>` — do not write it by
+# hand. In the container, entrypoint.sh writes this file on first start
+# (REVIEWER_LOGIN, REVIEWER_LLM_GROUPING) and clones SUPATREE_STACKS.
+version: 1
+stacks: []
+
+# Notifications go to the container's stderr: /proc/1/fd/2 is PID 1's
+# (tini's) stderr, which is what `kubectl logs` shows. Only review_failed — "the
+# reviewer gave up on a pull request" — is loud enough to be delivered.
+# To post to a chat instead, use any command; {title} and {text} are
+# substituted, with quotes and control characters stripped:
+#   notify_command: ["curl", "-fsS", "-X", "POST", "-H", "Content-Type: application/json",
+#                    "-d", "{\"text\": \"{title}: {text}\"}", "https://hooks.slack.com/services/…"]
+notify_command: ["sh", "-c", "printf 'notify: %s: %s\\n' \"$1\" \"$2\" >> /proc/1/fd/2", "notify", "{title}", "{text}"]
+
+reviewer:
+  enabled: true
+  login: acme-review-bot
+  # stacks: [platform]
+  group_window: 5m
+  llm_grouping: false
+  max_concurrent: 2
+  max_attempts: 3
+  timeout: 45m
+  tree_ttl: 168h
+  # Advice added to every review; REVIEW.md in the stack repo and in each
+  # repository add more (docs/reviewer.md, "Review guidance").
+  # guidance: |
+  #   Treat missing tests for new behaviour as blocking.
+  # guidance_file: review-advice.md
+  # Leave approving to a person: nothing blocking is posted as COMMENT.
+  # approve: false
+  # Appended to every review, so readers can tell it from a person's.
+  # signature: "_Automated review by supatree._"
+  # Never review these authors' pull requests.
+  # ignore_authors: ["dependabot[bot]", "renovate[bot]"]
+  # Skip pull requests last updated before this: a date, or an age (14d).
+  # since: 14d

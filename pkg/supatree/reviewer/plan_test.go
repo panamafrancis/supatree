@@ -1,0 +1,575 @@
+package reviewer
+
+import (
+	"slices"
+	"strconv"
+	"strings"
+	"testing"
+	"time"
+
+	"github.com/panamafrancis/supatree/pkg/supatree"
+	"github.com/panamafrancis/workbench/pkg/github"
+)
+
+const (
+	bot   = "review-bot"
+	apiPR = "o/api#1"
+	webPR = "o/web#2"
+	// The supatree branches of one change, x.
+	apiAlias  = "api"
+	apiBranch = "st/x/api"
+	webBranch = "st/x/web"
+	webAlias  = "web"
+	treeA     = "rv-a"
+)
+
+var t0 = time.Date(2026, 10, 1, 12, 0, 0, 0, time.UTC)
+
+func settings() Settings {
+	return Settings{Login: bot, GroupWindow: 5 * time.Minute, MaxConcurrent: 2, MaxAttempts: 3, TreeTTL: 7 * 24 * time.Hour}
+}
+
+// pr builds a watched pull request in stack "web": repo is owner/name, and the
+// member alias is the name.
+func pr(repo string, n int, mods ...func(*PR)) *PR {
+	_, alias, _ := strings.Cut(repo, "/")
+	p := &PR{
+		Key: PRKey(repo, n), Repo: repo, Number: n, URL: "https://github.com/" + repo + "/pull/" + strconv.Itoa(n),
+		Author: "alice", HeadRef: "feature-x-" + alias, Head: "abc1234", Status: github.PROpen,
+		Requested: true, UpdatedAt: t0, Stack: "web", Alias: alias,
+	}
+	for _, m := range mods {
+		m(p)
+	}
+	return p
+}
+
+func snapOf(now time.Time, prs ...*PR) Snapshot {
+	s := Snapshot{Now: now, PRs: map[string]*PR{}, Trees: map[string]*Tree{}, Running: map[string]bool{}}
+	for _, p := range prs {
+		s.PRs[p.Key] = p
+	}
+	return s
+}
+
+func newState() *State { return &State{PRs: map[string]*PRState{}, Trees: map[string]*TreeState{}} }
+
+func kinds(as []Action) []string {
+	out := make([]string, 0, len(as))
+	for _, a := range as {
+		out = append(out, string(a.Kind)+":"+a.Tree+":"+strings.Join(a.PRs, ","))
+	}
+	return out
+}
+
+func TestWaiting(t *testing.T) {
+	reviewed := &PRState{ReviewedAt: t0}
+	tests := []struct {
+		name string
+		p    *PR
+		ps   *PRState
+		want bool
+	}{
+		{"requested", pr("o/api", 1), nil, true},
+		{"not requested", pr("o/api", 1, func(p *PR) { p.Requested = false }), nil, false},
+		{"draft", pr("o/api", 1, func(p *PR) { p.Status = github.PRDraft }), nil, false},
+		{"merged", pr("o/api", 1, func(p *PR) { p.Status = github.PRMerged }), nil, false},
+		{"own pull request", pr("o/api", 1, func(p *PR) { p.Author = "Review-Bot" }), nil, false},
+		// A listing read before the review landed still shows the request it answered.
+		{"stale listing after a review", pr("o/api", 1, func(p *PR) { p.UpdatedAt = t0.Add(-time.Second) }), reviewed, false},
+		{"re-requested after a review", pr("o/api", 1, func(p *PR) { p.UpdatedAt = t0.Add(time.Hour) }), reviewed, true},
+		{"ignored author", pr("o/api", 1, func(p *PR) { p.Author = "dependabot[bot]" }), nil, false},
+		{"older than since", pr("o/api", 1, func(p *PR) { p.UpdatedAt = t0.Add(-48 * time.Hour) }), nil, false},
+	}
+	s := settings()
+	s.IgnoreAuthors = []string{"Dependabot[bot]"}
+	s.Since = t0.Add(-24 * time.Hour)
+	for _, tc := range tests {
+		if got := waiting(tc.p, tc.ps, s); got != tc.want {
+			t.Errorf("%s: waiting = %v, want %v", tc.name, got, tc.want)
+		}
+	}
+}
+
+func TestGroupDeterministic(t *testing.T) {
+	marker := "<!-- supatree:change id=fix-login -->"
+	tests := []struct {
+		name string
+		prs  []*PR
+		want [][]string
+	}{
+		{
+			"change marker",
+			[]*PR{pr("o/api", 1, func(p *PR) { p.Body = marker; p.HeadRef = "a" }), pr("o/web", 2, func(p *PR) { p.Body = "x\n" + marker; p.HeadRef = "b" })},
+			[][]string{{apiPR, webPR}},
+		},
+		{
+			"linked from the description",
+			[]*PR{pr("o/api", 1, func(p *PR) { p.Body = "needs o/web#2"; p.HeadRef = "a" }), pr("o/web", 2, func(p *PR) { p.HeadRef = "b" })},
+			[][]string{{apiPR, webPR}},
+		},
+		{
+			"same supatree slug",
+			[]*PR{pr("o/api", 1, func(p *PR) { p.HeadRef = "st/fix-login/api" }), pr("o/web", 2, func(p *PR) { p.HeadRef = "st/fix-login/web" })},
+			[][]string{{apiPR, webPR}},
+		},
+		{
+			"same branch, different authors",
+			[]*PR{pr("o/api", 1, func(p *PR) { p.HeadRef = "fix" }), pr("o/web", 2, func(p *PR) { p.HeadRef = "fix"; p.Author = "bob" })},
+			[][]string{{apiPR}, {webPR}},
+		},
+		{
+			"a link to someone else's pull request",
+			[]*PR{pr("o/api", 1, func(p *PR) { p.Body = "see https://github.com/o/web/pull/2"; p.HeadRef = "a" }), pr("o/web", 2, func(p *PR) { p.Author = "bob"; p.HeadRef = "b" })},
+			[][]string{{apiPR}, {webPR}},
+		},
+		{
+			// A review tree holds one pull request per repo: two in one
+			// repo split rather than merge, the first union winning.
+			"two in one repo",
+			[]*PR{
+				pr("o/api", 1, func(p *PR) { p.HeadRef = apiBranch }),
+				pr("o/api", 3, func(p *PR) { p.HeadRef = "st/x/api2" }),
+				pr("o/web", 2, func(p *PR) { p.HeadRef = webBranch }),
+			},
+			[][]string{{apiPR, webPR}, {"o/api#3"}},
+		},
+		{
+			"different stacks",
+			[]*PR{pr("o/api", 1, func(p *PR) { p.HeadRef = "fix" }), pr("o/web", 2, func(p *PR) { p.HeadRef = "fix"; p.Stack = "other" })},
+			[][]string{{apiPR}, {webPR}},
+		},
+		{
+			"a default branch says nothing",
+			[]*PR{pr("o/api", 1, func(p *PR) { p.HeadRef = "main" }), pr("o/web", 2, func(p *PR) { p.HeadRef = "main" })},
+			[][]string{{apiPR}, {webPR}},
+		},
+	}
+	for _, tc := range tests {
+		m := map[string]*PR{}
+		for _, p := range tc.prs {
+			m[p.Key] = p
+		}
+		got := groupDeterministic(m).components()
+		if !slices.EqualFunc(got, tc.want, slices.Equal[[]string]) {
+			t.Errorf("%s: groups = %v, want %v", tc.name, got, tc.want)
+		}
+	}
+}
+
+// Siblings opened a few minutes apart land in one tree: a new group waits out
+// the window from its newest request.
+func TestPlanWaitsOutTheGroupWindow(t *testing.T) {
+	st := newState()
+	api := pr("o/api", 1, func(p *PR) { p.HeadRef = apiBranch })
+	if as := Plan(snapOf(t0, api), st, settings(), nil); len(as) != 0 {
+		t.Fatalf("first sight: %v, want nothing until the window passes", kinds(as))
+	}
+	web := pr("o/web", 2, func(p *PR) { p.HeadRef = webBranch })
+	if as := Plan(snapOf(t0.Add(4*time.Minute), api, web), st, settings(), nil); len(as) != 0 {
+		t.Fatalf("sibling arrived: %v, want the window restarted", kinds(as))
+	}
+	as := Plan(snapOf(t0.Add(10*time.Minute), api, web), st, settings(), nil)
+	if got := kinds(as); !slices.Equal(got, []string{"create::o/api#1,o/web#2"}) {
+		t.Fatalf("after the window: %v, want one tree for both", got)
+	}
+	if st.PRs[webPR].Grouping != ReasonBranch {
+		t.Errorf("grouping reason = %q", st.PRs[webPR].Grouping)
+	}
+}
+
+func TestPlanRunsAddsAndReaps(t *testing.T) {
+	now := t0.Add(time.Hour)
+	tree := &Tree{Name: "rv-api-1", Stack: "web", PRs: map[string]string{apiAlias: apiPR}}
+
+	t.Run("a waiting pull request in a tree is run", func(t *testing.T) {
+		st := newState()
+		snap := snapOf(now, pr("o/api", 1))
+		snap.Trees[tree.Name] = tree
+		if got := kinds(Plan(snap, st, settings(), nil)); !slices.Equal(got, []string{"run:rv-api-1:o/api#1"}) {
+			t.Errorf("actions = %v", got)
+		}
+	})
+	t.Run("not while a run is in flight", func(t *testing.T) {
+		st := newState()
+		snap := snapOf(now, pr("o/api", 1))
+		snap.Trees[tree.Name] = tree
+		snap.Running[tree.Name] = true
+		if got := kinds(Plan(snap, st, settings(), nil)); len(got) != 0 {
+			t.Errorf("actions = %v", got)
+		}
+	})
+	t.Run("a late sibling joins the tree at once", func(t *testing.T) {
+		st := newState()
+		snap := snapOf(now,
+			pr("o/api", 1, func(p *PR) { p.HeadRef = apiBranch; p.Requested = false }),
+			pr("o/web", 2, func(p *PR) { p.HeadRef = webBranch }))
+		snap.Trees[tree.Name] = tree
+		got := kinds(Plan(snap, st, settings(), nil))
+		if !slices.Equal(got, []string{"add:rv-api-1:o/web#2"}) {
+			t.Errorf("actions = %v", got)
+		}
+	})
+	t.Run("a second change in a held repo gets its own tree", func(t *testing.T) {
+		st := newState()
+		st.PRs["o/api#3"] = &PRState{WaitingSince: t0}
+		snap := snapOf(now,
+			pr("o/api", 1, func(p *PR) { p.HeadRef = apiBranch; p.Requested = false }),
+			pr("o/api", 3, func(p *PR) { p.HeadRef = apiBranch }))
+		snap.Trees[tree.Name] = tree
+		got := kinds(Plan(snap, st, settings(), nil))
+		if !slices.Equal(got, []string{"create::o/api#3"}) {
+			t.Errorf("actions = %v", got)
+		}
+	})
+	t.Run("merged everywhere is reaped", func(t *testing.T) {
+		st := newState()
+		snap := snapOf(now, pr("o/api", 1, func(p *PR) { p.Status = github.PRMerged }))
+		snap.Trees[tree.Name] = tree
+		if got := kinds(Plan(snap, st, settings(), nil)); !slices.Equal(got, []string{"reap:rv-api-1:"}) {
+			t.Errorf("actions = %v", got)
+		}
+	})
+	t.Run("a pull request the cache lost is not proof it merged", func(t *testing.T) {
+		st := newState()
+		st.Trees[tree.Name] = &TreeState{CreatedAt: now.Add(-time.Hour)}
+		snap := snapOf(now)
+		snap.Trees[tree.Name] = tree
+		if got := kinds(Plan(snap, st, settings(), nil)); len(got) != 0 {
+			t.Errorf("actions = %v", got)
+		}
+	})
+	t.Run("idle past the TTL is reaped", func(t *testing.T) {
+		st := newState()
+		st.Trees[tree.Name] = &TreeState{CreatedAt: now.Add(-30 * 24 * time.Hour), LastRunAt: now.Add(-8 * 24 * time.Hour)}
+		snap := snapOf(now, pr("o/api", 1, func(p *PR) { p.Requested = false }))
+		snap.Trees[tree.Name] = tree
+		if got := kinds(Plan(snap, st, settings(), nil)); !slices.Equal(got, []string{"reap:rv-api-1:"}) {
+			t.Errorf("actions = %v", got)
+		}
+	})
+}
+
+func TestPlanBacksOffAndGivesUp(t *testing.T) {
+	tree := &Tree{Name: "rv-api-1", Stack: "web", PRs: map[string]string{apiAlias: apiPR}}
+	plan := func(now time.Time, st *State, p *PR) []string {
+		snap := snapOf(now, p)
+		snap.Trees[tree.Name] = tree
+		return kinds(Plan(snap, st, settings(), nil))
+	}
+	st := newState()
+	st.PRs[apiPR] = &PRState{WaitingSince: t0, Attempts: 1, LastAttempt: t0}
+	if got := plan(t0.Add(5*time.Minute), st, pr("o/api", 1)); len(got) != 0 {
+		t.Errorf("inside the backoff: %v", got)
+	}
+	if got := plan(t0.Add(11*time.Minute), st, pr("o/api", 1)); len(got) != 1 {
+		t.Errorf("past the backoff: %v", got)
+	}
+	st.PRs[apiPR].GaveUpAt = t0
+	if got := plan(t0.Add(3*time.Hour), st, pr("o/api", 1)); len(got) != 0 {
+		t.Errorf("given up: %v", got)
+	}
+	// The author pushed (or re-requested): the pull request moved after the
+	// give-up, so it is tried afresh.
+	moved := pr("o/api", 1, func(p *PR) { p.UpdatedAt = t0.Add(time.Hour) })
+	if got := plan(t0.Add(3*time.Hour), st, moved); len(got) != 1 {
+		t.Errorf("moved after the give-up: %v", got)
+	}
+	if st.PRs[apiPR].Attempts != 0 {
+		t.Errorf("attempts = %d, want reset", st.PRs[apiPR].Attempts)
+	}
+}
+
+func TestPlanCapsConcurrentRuns(t *testing.T) {
+	snap := snapOf(t0.Add(time.Hour), pr("o/api", 1), pr("o/api", 2), pr("o/api", 3))
+	st := newState()
+	for i, n := range []string{"a", "b", "c"} {
+		snap.Trees[n] = &Tree{Name: n, PRs: map[string]string{apiAlias: PRKey("o/api", i+1)}}
+	}
+	snap.Running["a"] = true
+	s := settings()
+	got := kinds(Plan(snap, st, s, nil))
+	if len(got) != s.MaxConcurrent-1 {
+		t.Errorf("runs = %v, want %d with one already running", got, s.MaxConcurrent-1)
+	}
+}
+
+// The LLM pass only ever sees one author's lone pull requests across
+// repositories, and what it proposes is held to the same constraint.
+func TestPlanAppliesRelatedUnderTheConstraint(t *testing.T) {
+	api := pr("o/api", 1, func(p *PR) { p.HeadRef = "a" })
+	web := pr("o/web", 2, func(p *PR) { p.HeadRef = "b" })
+	api2 := pr("o/api", 3, func(p *PR) { p.HeadRef = "c" })
+	st := newState()
+	var asked []string
+	related := func(prs []*PR, _ map[string]string) [][]string {
+		for _, p := range prs {
+			asked = append(asked, p.Key)
+		}
+		return [][]string{{apiPR, webPR, "o/api#3"}}
+	}
+	Plan(snapOf(t0, api, web, api2), st, settings(), related) // first sight starts the window
+	got := kinds(Plan(snapOf(t0.Add(time.Hour), api, web, api2), st, settings(), related))
+	if !slices.Equal(got, []string{"create::o/api#1,o/web#2", "create::o/api#3"}) {
+		t.Errorf("actions = %v", got)
+	}
+	if st.PRs[webPR].Grouping != ReasonLLM {
+		t.Errorf("grouping = %q", st.PRs[webPR].Grouping)
+	}
+	if len(asked) == 0 {
+		t.Error("related was never asked")
+	}
+}
+
+func TestParseWatchKey(t *testing.T) {
+	repo, n, ok := parseWatchKey(github.WatchKey("Bot", github.RepoRef{Owner: "acme", Name: apiAlias}, 12))
+	if !ok || repo != "acme/api" || n != 12 {
+		t.Errorf("parsed %q %d %v", repo, n, ok)
+	}
+	for _, bad := range []string{"pr:acme/api#1", "watch:bot", "watch:bot:acme/api#x", "watch:bot:acme/api"} {
+		if _, _, ok := parseWatchKey(bad); ok {
+			t.Errorf("%q parsed", bad)
+		}
+	}
+}
+
+func TestBriefCarriesNoAuthorText(t *testing.T) {
+	b := Brief(bot, true,
+		[]briefPR{{Alias: apiAlias, URL: "https://github.com/o/api/pull/1", LastHead: "0123456789abcdef"}},
+		[]briefPR{{Alias: "web", URL: "https://github.com/o/web/pull/2"}}, Guidance{})
+	for _, want := range []string{"@" + bot, "re-review", "git -C repos/api diff 0123456789abcdef..HEAD", "post nothing on them", "o/web/pull/2"} {
+		if !strings.Contains(b, want) {
+			t.Errorf("brief lacks %q:\n%s", want, b)
+		}
+	}
+}
+
+func TestParseLLMOutput(t *testing.T) {
+	prs := []*PR{pr("o/api", 1), pr("o/web", 2)}
+	structured := `{"type":"result","is_error":false,"result":"","structured_output":{"groups":[{"prs":["o/api#1","o/web#2","o/evil#9"],"reason":"r"}]}}`
+	got, err := parseLLMOutput([]byte(structured), prs)
+	if err != nil || len(got) != 1 || !slices.Equal(got[0], []string{apiPR, webPR}) {
+		t.Errorf("structured: %v %v", got, err)
+	}
+	text := `{"type":"result","result":"{\"groups\":[{\"prs\":[\"o/api#1\"]}]}"}`
+	if got, err := parseLLMOutput([]byte(text), prs); err != nil || len(got) != 0 {
+		t.Errorf("a one-PR group is no group: %v %v", got, err)
+	}
+}
+
+// The marker the reviewer groups on is the one create_prs writes.
+func TestGroupsOnTheBlockCreatePRsWrites(t *testing.T) {
+	body := supatree.WithChangeBlock("desc", supatree.ChangeBlock("fix-login", nil))
+	prs := map[string]*PR{
+		apiPR: pr("o/api", 1, func(p *PR) { p.Body = body; p.HeadRef = "a" }),
+		webPR: pr("o/web", 2, func(p *PR) { p.Body = body; p.HeadRef = "b" }),
+	}
+	g := groupDeterministic(prs)
+	if got := g.components(); len(got) != 1 || g.reason[webPR] != ReasonMarker {
+		t.Errorf("groups = %v (reason %q), want one by the marker", got, g.reason[webPR])
+	}
+}
+
+// A dry run decides from the state but records nothing in it — not even when
+// a request was first seen — and still reports each change and when its tree
+// would be made.
+func TestDryRunRecordsNothing(t *testing.T) {
+	st := newState()
+	api := pr("o/api", 1, func(p *PR) { p.HeadRef = apiBranch })
+	web := pr("o/web", 2, func(p *PR) { p.HeadRef = webBranch })
+	other := pr("o/api", 5, func(p *PR) { p.HeadRef = "solo"; p.Requested = false })
+	p, err := DryRun(snapOf(t0, api, web, other), st, settings(), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(st.PRs) != 0 || len(st.Trees) != 0 {
+		t.Errorf("dry run wrote state: %+v", st.PRs)
+	}
+	if len(p.Actions) != 0 {
+		t.Errorf("actions = %v, want none inside the window", kinds(p.Actions))
+	}
+	if len(p.Groups) != 2 {
+		t.Fatalf("groups = %+v, want the change and the lone pull request", p.Groups)
+	}
+	change := p.Groups[0]
+	if !slices.Equal(change.PRs, []string{apiPR, webPR}) || !change.ReadyAt.Equal(t0.Add(settings().GroupWindow)) || change.Reasons[webPR] != ReasonBranch {
+		t.Errorf("change = %+v", change)
+	}
+	if lone := p.Groups[1]; len(lone.Waiting) != 0 || !lone.ReadyAt.IsZero() {
+		t.Errorf("an unrequested pull request = %+v", lone)
+	}
+}
+
+func TestDryRunAsksRelatedOnce(t *testing.T) {
+	asked := 0
+	related := func([]*PR, map[string]string) [][]string { asked++; return nil }
+	st := newState()
+	st.PRs[apiPR] = &PRState{WaitingSince: t0}
+	st.PRs[webPR] = &PRState{WaitingSince: t0}
+	snap := snapOf(t0.Add(time.Hour), pr("o/api", 1, func(p *PR) { p.HeadRef = "a" }), pr("o/web", 2, func(p *PR) { p.HeadRef = "b" }))
+	if _, err := DryRun(snap, st, settings(), related); err != nil {
+		t.Fatal(err)
+	}
+	if asked != 1 {
+		t.Errorf("related asked %d times, want once", asked)
+	}
+}
+
+func TestBriefWithoutApproval(t *testing.T) {
+	b := Brief(bot, false, []briefPR{{Alias: apiAlias, URL: "https://github.com/o/api/pull/1"}}, nil, Guidance{})
+	if strings.Contains(b, "- APPROVE when") || !strings.Contains(b, "You may not APPROVE") {
+		t.Errorf("brief still offers APPROVE:\n%s", b)
+	}
+}
+
+// A sibling opened after its change's tree was made, linked by nothing, still
+// reaches the LLM pass with the tree's pull requests, and joins the tree.
+func TestRelatedJoinsLateSiblingToTree(t *testing.T) {
+	api := pr("o/api", 1, func(p *PR) { p.HeadRef = "a"; p.Requested = false })
+	web := pr("o/web", 2, func(p *PR) { p.HeadRef = "b"; p.Requested = false })
+	cli := pr("o/cli", 3, func(p *PR) { p.HeadRef = "c" })
+	snap := snapOf(t0, api, web, cli)
+	snap.Trees[treeA] = &Tree{Name: treeA, PRs: map[string]string{apiAlias: apiPR, webAlias: webPR}}
+	st := newState()
+	var sawInReview map[string]string
+	related := func(prs []*PR, inReview map[string]string) [][]string {
+		sawInReview = inReview
+		return [][]string{{webPR, "o/cli#3"}}
+	}
+	got := kinds(Plan(snap, st, settings(), related))
+	if !slices.Equal(got, []string{"add:rv-a:o/cli#3"}) {
+		t.Errorf("actions = %v, want the late sibling added to rv-a at once", got)
+	}
+	if sawInReview[apiPR] != treeA || sawInReview[webPR] != treeA || sawInReview["o/cli#3"] != "" {
+		t.Errorf("inReview = %v", sawInReview)
+	}
+	if st.PRs["o/cli#3"].Grouping != ReasonLLM {
+		t.Errorf("grouping = %q", st.PRs["o/cli#3"].Grouping)
+	}
+}
+
+// What is under review is only something to join: a proposal that would
+// regroup reviewed pull requests, or pull two trees together, is not used for
+// that, and a lone pull request alone with reviewed ones in its own repository
+// does not trigger a call.
+func TestRelatedNeverRegroupsReviewedPRs(t *testing.T) {
+	a1 := pr("o/api", 1, func(p *PR) { p.HeadRef = "a"; p.Requested = false })
+	w2 := pr("o/web", 2, func(p *PR) { p.HeadRef = "b"; p.Requested = false })
+	c3 := pr("o/cli", 3, func(p *PR) { p.HeadRef = "c" })
+	snap := snapOf(t0.Add(time.Hour), a1, w2, c3)
+	snap.Trees[treeA] = &Tree{Name: treeA, PRs: map[string]string{apiAlias: apiPR}}
+	snap.Trees["rv-b"] = &Tree{Name: "rv-b", PRs: map[string]string{webAlias: webPR}}
+	st := newState()
+	st.PRs["o/cli#3"] = &PRState{WaitingSince: t0}
+	related := func([]*PR, map[string]string) [][]string {
+		return [][]string{{apiPR, webPR, "o/cli#3"}}
+	}
+	got := kinds(Plan(snap, st, settings(), related))
+	// cli joins one tree — the first reviewed pull request named — never both.
+	if !slices.Equal(got, []string{"add:rv-a:o/cli#3"}) {
+		t.Errorf("actions = %v", got)
+	}
+
+	asked := false
+	solo := snapOf(t0, a1, pr("o/api", 4, func(p *PR) { p.HeadRef = "d" }))
+	solo.Trees[treeA] = snap.Trees[treeA]
+	Plan(solo, newState(), settings(), func([]*PR, map[string]string) [][]string { asked = true; return nil })
+	if asked {
+		t.Error("asked about a lone pull request with nothing in another repository")
+	}
+}
+
+func TestLLMInputMarksPRsInReview(t *testing.T) {
+	in, err := llmInput([]*PR{pr("o/api", 1), pr("o/web", 2)}, map[string]string{apiPR: treeA})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Count(in, `"in_review_as": "`+treeA+`"`) != 1 {
+		t.Errorf("input does not mark exactly the reviewed pull request:\n%s", in)
+	}
+}
+
+// A backlog is not a tree per pull request before anything is reviewed: new
+// trees take a review slot, as runs do, oldest request first, and each is
+// reviewed as soon as it exists.
+func TestPlanPacesCreatesToFreeSlots(t *testing.T) {
+	st := newState()
+	var prs []*PR
+	for i := 1; i <= 4; i++ {
+		prs = append(prs, pr("o/svc"+strconv.Itoa(i), i, func(p *PR) { p.Author = "author" + strconv.Itoa(i) }))
+	}
+	snap := snapOf(t0, prs...)
+	snap.Trees["busy"] = &Tree{Name: "busy", PRs: map[string]string{}}
+	snap.Running["busy"] = true
+	Plan(snap, st, settings(), nil)
+	// The fourth was asked first; the others later, in order.
+	for i, p := range prs {
+		st.PRs[p.Key].WaitingSince = t0.Add(time.Duration(i+1) * time.Minute)
+	}
+	st.PRs[prs[3].Key].WaitingSince = t0
+
+	snap.Now = t0.Add(time.Hour)
+	as := Plan(snap, st, settings(), nil)
+	if got := kinds(as); !slices.Equal(got, []string{"create::o/svc4#4"}) {
+		t.Fatalf("one slot free: %v, want only the oldest request's tree", got)
+	}
+	if !slices.Equal(as[0].Run, []string{"o/svc4#4"}) {
+		t.Errorf("Run = %v, want the new tree reviewed at once", as[0].Run)
+	}
+
+	// A run in an existing tree waiting longer goes ahead of a new tree.
+	delete(snap.Running, "busy")
+	delete(snap.Trees, "busy")
+	snap.Trees["old"] = &Tree{Name: "old", PRs: map[string]string{"api": apiPR}}
+	snap.PRs[apiPR] = pr("o/api", 1)
+	st.pr(apiPR).WaitingSince = t0.Add(-time.Hour)
+	got := kinds(Plan(snap, st, settings(), nil))
+	if !slices.Equal(got, []string{"run:old:o/api#1", "create::o/svc4#4"}) {
+		t.Errorf("two slots: %v, want the older run, then the oldest create", got)
+	}
+}
+
+// Dependabot opens the same branch in every repository it bumps; those are
+// separate changes, and the LLM is not asked to judge otherwise.
+func TestBotPullRequestsAreNeverGrouped(t *testing.T) {
+	const branch = "dependabot/docker/docker-updates-22e9647013"
+	dep := func(p *PR) { p.Author, p.HeadRef = "dependabot[bot]", branch }
+	api, web := pr("o/api", 1, dep), pr("o/web", 2, dep)
+	web.Body = "See " + api.URL
+	prs := map[string]*PR{api.Key: api, web.Key: web}
+	g := groupDeterministic(prs)
+	if g.find(api.Key) == g.find(web.Key) {
+		t.Fatal("two Dependabot pull requests grouped")
+	}
+	asked := false
+	applyRelated(g, prs, func([]*PR, map[string]string) [][]string { asked = true; return nil },
+		map[string]string{}, func(string) bool { return true })
+	if asked {
+		t.Error("the LLM pass was asked about a bot's pull requests")
+	}
+}
+
+func TestParseSince(t *testing.T) {
+	now := time.Date(2026, 11, 3, 12, 0, 0, 0, time.UTC)
+	tests := []struct {
+		in   string
+		want time.Time
+	}{
+		{"", time.Time{}},
+		{"2026-11-03T08:00:00Z", time.Date(2026, 11, 3, 8, 0, 0, 0, time.UTC)},
+		{"14d", now.AddDate(0, 0, -14)},
+		{"72h", now.Add(-72 * time.Hour)},
+		{"2026-11-01", time.Date(2026, 11, 1, 0, 0, 0, 0, time.Local)},
+	}
+	for _, tc := range tests {
+		got, err := parseSince(tc.in, now)
+		if err != nil || !got.Equal(tc.want) {
+			t.Errorf("parseSince(%q) = %v, %v; want %v", tc.in, got, err, tc.want)
+		}
+	}
+	for _, bad := range []string{"yesterday", "-3d", "-1h"} {
+		if _, err := parseSince(bad, now); err == nil {
+			t.Errorf("parseSince(%q): no error", bad)
+		}
+	}
+}

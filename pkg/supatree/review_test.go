@@ -565,3 +565,31 @@ func TestInferReviewStack(t *testing.T) {
 		t.Errorf("review tree built from stack %q, want s", inst.Stack)
 	}
 }
+
+// A reviewer that may not approve posts COMMENT whatever its agent asks for,
+// and every review it posts carries the signature.
+func TestReviewerPost(t *testing.T) {
+	off := false
+	const lgtm = "lgtm"
+	sig := "_Automated review by supatree._"
+	cases := []struct {
+		name            string
+		r               *ReviewerSettings
+		event, body     string
+		wantEv, wantBod string
+		noted           bool
+	}{
+		{"no reviewer block", nil, "APPROVE", lgtm, "APPROVE", lgtm, false},
+		{"approve unset", &ReviewerSettings{}, "APPROVE", lgtm, "APPROVE", lgtm, false},
+		{"approve off", &ReviewerSettings{Approve: &off}, "approve", lgtm, "COMMENT", lgtm, true},
+		{"approve off, changes", &ReviewerSettings{Approve: &off}, "REQUEST_CHANGES", "fix", "REQUEST_CHANGES", "fix", false},
+		{"signature", &ReviewerSettings{Signature: sig}, "COMMENT", "body\n", "COMMENT", "body\n\n---\n" + sig, false},
+		{"signature, empty body", &ReviewerSettings{Signature: " " + sig + "\n"}, "COMMENT", "", "COMMENT", sig, false},
+	}
+	for _, c := range cases {
+		ev, body, note := reviewerPost(c.r, c.event, c.body)
+		if ev != c.wantEv || body != c.wantBod || (note != "") != c.noted {
+			t.Errorf("%s: got (%q, %q, %q), want (%q, %q, noted %v)", c.name, ev, body, note, c.wantEv, c.wantBod, c.noted)
+		}
+	}
+}

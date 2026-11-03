@@ -33,6 +33,9 @@ var eventTier = map[EventKind]Tier{
 	EventPushed:           TierGlyph,
 	EventPROpened:         TierGlyph,
 	EventChecksPassed:     TierGlyph,
+	EventAuthorPushed:     TierGlyph,
+	EventTreeReviewed:     TierBoard,
+	EventReviewPosted:     TierBoard,
 	EventApproved:         TierBoard,
 	EventMerged:           TierBoard,
 	EventClosed:           TierBoard,
@@ -40,6 +43,7 @@ var eventTier = map[EventKind]Tier{
 	EventStale:            TierBoard,
 	EventChangesRequested: TierDesktop,
 	EventChecksFailed:     TierDesktop,
+	EventReviewFailed:     TierDesktop,
 }
 
 // TierOf reports the loudest surface an event kind may use. An unknown kind —

@@ -1,0 +1,15 @@
+# The reviewer's home: config, state (which reviews were posted), the
+# repository cache and the review trees. It must persist across restarts.
+# UNTESTED — see docs/reviewer.md.
+#
+# Size it for one clone of every repository in the watched stacks, plus a
+# worktree (and build output) per open review.
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: supatree-reviewer-home
+spec:
+  accessModes: ["ReadWriteOnce"]
+  resources:
+    requests:
+      storage: 50Gi

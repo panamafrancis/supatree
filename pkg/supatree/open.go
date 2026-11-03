@@ -61,6 +61,9 @@ func OpenRootAgent(inst *Instance, c *Config, ws zellij.Workspace, sidebarWidth,
 	if err := checkMainModel(agentName, opts.Model, inst.Model); err != nil {
 		return LaunchFailed, err
 	}
+	if run, ok := HeadlessRun(inst.Name, agentName); ok {
+		return LaunchFailed, fmt.Errorf("agent %s in %s is running headless (since %s); open it once the run ends — `supatree reviewer watch %s` follows a review run", agentName, inst.Name, run.Started.Local().Format(time.TimeOnly), inst.Name)
+	}
 	tab := TabName(inst.Name, agentName)
 	// Going to an agent that is already running is a tab switch, and nothing
 	// more. Doing it through the launch path below put every switch behind the

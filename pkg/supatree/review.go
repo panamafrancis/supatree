@@ -702,3 +702,42 @@ func addedBrief(added map[string]ReviewRef) string {
 		"side by side, and note whether they change any verdict you posted. .supatree/info.md lists every PR.")
 	return b.String()
 }
+
+// StackRepo is one member of a stack as the reviewer needs it: which
+// repository it is and where supatree's clone of it lives.
+type StackRepo struct {
+	Alias string
+	Repo  string // owner/name
+	// Clone is supatree's cached clone, or "" when there is none yet. Only a
+	// repository supatree has already cloned is watched: the spec is read from
+	// the stack's checkout, which agents can write, and nothing here clones
+	// what only that checkout names.
+	Clone string
+}
+
+// StackRepos lists the members of a stack that resolve to a GitHub
+// repository, keyed by owner/name (lowercased).
+func (c *Config) StackRepos(stack string) (map[string]StackRepo, error) {
+	st := c.FindStack(stack)
+	if st == nil {
+		return nil, fmt.Errorf("no stack %q", stack)
+	}
+	spec, err := LoadSpec(st.Path)
+	if err != nil {
+		return nil, err
+	}
+	out := make(map[string]StackRepo, len(spec.Members))
+	for _, alias := range spec.Aliases() {
+		url := spec.Members[alias]
+		r, ok := resolveRemote(url)
+		if !ok || !r.IsGitHub() {
+			continue
+		}
+		sr := StackRepo{Alias: alias, Repo: r.Repo().String()}
+		if bc, err := c.cachedClone(alias, url); err == nil && isClone(bc.Clone) {
+			sr.Clone = bc.Clone
+		}
+		out[strings.ToLower(sr.Repo)] = sr
+	}
+	return out, nil
+}

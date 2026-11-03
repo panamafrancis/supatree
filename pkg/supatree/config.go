@@ -62,12 +62,65 @@ type Config struct {
 	// a request arrives for it. Off by default: the text lands wherever the
 	// prompt is, including in the middle of something you are typing there.
 	PMNudge bool `yaml:"pm_nudge,omitempty"`
+	// Reviewer configures the automated reviewer (pkg/supatree/reviewer),
+	// which the watcher runs when it is enabled.
+	Reviewer *ReviewerSettings `yaml:"reviewer,omitempty"`
 	// Models is supatree's own open map of launchable models — the same shape
 	// as workbench's, never read from it. Empty means the built-in defaults.
 	Models map[string]config.Model `yaml:"models,omitempty"`
 	// Repos holds personal per-repo settings, keyed by host/owner/repo. They
 	// are local to this machine and never belong in a shared supatree.yml.
 	Repos map[string]RepoSettings `yaml:"repos,omitempty"`
+}
+
+// ReviewerSettings configure the automated reviewer: a GitHub account whose
+// review requests the watcher picks up, reviews in review trees of its own and
+// answers. Durations are Go duration strings; empty fields take the defaults
+// pkg/supatree/reviewer documents.
+type ReviewerSettings struct {
+	Enabled bool `yaml:"enabled"`
+	// Login is the reviewer's GitHub account. It must be the account gh is
+	// authenticated as — reviews are posted through gh — and must not be the
+	// account that authors the pull requests: GitHub refuses an approval of
+	// your own.
+	Login string `yaml:"login"`
+	// Stacks limits the reviewer to these stacks' repositories. Empty is every
+	// registered stack.
+	Stacks []string `yaml:"stacks,omitempty"`
+	// Model is the models entry reviews run under; it needs exec_args. Empty
+	// is the default model.
+	Model         string `yaml:"model,omitempty"`
+	GroupWindow   string `yaml:"group_window,omitempty"`
+	LLMGrouping   bool   `yaml:"llm_grouping,omitempty"`
+	MaxConcurrent int    `yaml:"max_concurrent,omitempty"`
+	MaxAttempts   int    `yaml:"max_attempts,omitempty"`
+	Timeout       string `yaml:"timeout,omitempty"`
+	TreeTTL       string `yaml:"tree_ttl,omitempty"`
+	// Guidance is extra review advice from whoever runs the reviewer, given
+	// to every review it runs. GuidanceFile is the same from a file, relative
+	// to supatree's config directory; both may be set.
+	Guidance     string `yaml:"guidance,omitempty"`
+	GuidanceFile string `yaml:"guidance_file,omitempty"`
+	// Approve lets the reviewer approve. Off, a review with nothing blocking
+	// is posted as COMMENT, so approving stays with a person — the setting for
+	// a reviewer that posts under that person's own account. Unset is on.
+	Approve *bool `yaml:"approve,omitempty"`
+	// Signature is appended to the body of every review the reviewer posts,
+	// so a reader can tell an automated review from a person's.
+	Signature string `yaml:"signature,omitempty"`
+	// IgnoreAuthors are GitHub logins whose pull requests are never
+	// reviewed, compared case-insensitively — a bot's is written as GitHub
+	// shows it, dependabot[bot].
+	IgnoreAuthors []string `yaml:"ignore_authors,omitempty"`
+	// Since skips pull requests last updated before it: a date (2006-01-02),
+	// a timestamp (RFC 3339), or an age such as 14d or 72h. For starting on a
+	// backlog of old requests without reviewing all of it.
+	Since string `yaml:"since,omitempty"`
+}
+
+// Approves reports whether the reviewer may post APPROVE.
+func (r *ReviewerSettings) Approves() bool {
+	return r == nil || r.Approve == nil || *r.Approve
 }
 
 // RepoSettings are one repo's personal, machine-local settings.
