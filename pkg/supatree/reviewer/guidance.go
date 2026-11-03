@@ -84,6 +84,9 @@ var repoGuidance = func(repo, ref string) (string, error) {
 	if errors.As(err, &exit) && strings.Contains(string(exit.Stderr), "404") {
 		return "", errNoGuidance
 	}
+	if errors.As(err, &exit) && len(exit.Stderr) > 0 {
+		return "", fmt.Errorf("gh api: %s", strings.TrimSpace(string(exit.Stderr)))
+	}
 	if err != nil {
 		return "", err
 	}
