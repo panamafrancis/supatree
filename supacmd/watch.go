@@ -318,13 +318,36 @@ var opsMu sync.Mutex
 // arguments. The singleton lock goes with the old image (Go opens every file
 // close-on-exec), so the new one wins the election straight away. On failure
 // the old watcher carries on.
+//
+// It waits a while for a running op to finish, then gives up until the next
+// round: waiting on opsMu for as long as it takes once wedged the whole
+// watcher — no rounds, no launches, no exit on SIGTERM — behind a create
+// stuck on a dead connection.
 func restartWatcher(path string) {
-	logWatch("watcher binary %s changed on disk — restarting", path)
-	opsMu.Lock()
+	if !restartDeferred {
+		logWatch("watcher binary %s changed on disk — restarting", path)
+	}
+	deadline := time.Now().Add(restartLockWait)
+	for !opsMu.TryLock() {
+		if time.Now().After(deadline) {
+			if !restartDeferred {
+				logWatch("restart deferred: a tree operation has been running for over %s; trying again each round", restartLockWait)
+				restartDeferred = true
+			}
+			return
+		}
+		time.Sleep(250 * time.Millisecond)
+	}
 	err := syscall.Exec(path, os.Args, os.Environ())
 	opsMu.Unlock()
 	logWatch("restart failed, carrying on: %v", err)
 }
+
+// restartLockWait is how long a restart waits for a running op each round.
+var restartLockWait = 20 * time.Second
+
+// restartDeferred: a restart is waiting on an op, and has said so.
+var restartDeferred bool
 
 // leaveCallerDir moves the watcher out of the directory it was started in.
 // It inherits `supatree start`'s, which is often a tree's — and once that tree

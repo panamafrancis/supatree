@@ -134,3 +134,23 @@ func TestLeaveCallerDir(t *testing.T) {
 		t.Errorf("cwd = %s, want the state root %s", got, want)
 	}
 }
+
+// A restart waits for a running op only so long: an op stuck on a dead
+// connection once wedged the whole watcher behind it.
+func TestRestartWatcherGivesUpOnAHeldOpLock(t *testing.T) {
+	old := restartLockWait
+	restartLockWait = 300 * time.Millisecond
+	defer func() { restartLockWait, restartDeferred = old, false }()
+	opsMu.Lock()
+	defer opsMu.Unlock()
+	done := make(chan struct{})
+	go func() { restartWatcher("/nonexistent/supatree"); close(done) }()
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("restartWatcher blocked on the op lock")
+	}
+	if !restartDeferred {
+		t.Error("deferral not recorded")
+	}
+}

@@ -143,6 +143,7 @@ func cloneInto(url, dest string) error {
 	cmd := exec.CommandContext(ctx, "git", "clone", "--quiet", "--", url, tmp)
 	cmd.Stdin = nil
 	cmd.Env = append(os.Environ(), "GIT_TERMINAL_PROMPT=0")
+	cmd.WaitDelay = netWaitDelay
 	if out, err := cmd.CombinedOutput(); err != nil {
 		return fmt.Errorf("%w: %s", err, strings.TrimSpace(string(out)))
 	}
