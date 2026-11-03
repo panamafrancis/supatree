@@ -88,7 +88,9 @@ func (r *Reviewer) Round(ctx context.Context, cfg *supatree.Config, cache *githu
 		}
 		switch a.Kind {
 		case ActCreate:
-			r.create(cfg, s, snap, a)
+			if name := r.create(cfg, s, snap, a); name != "" && len(a.Run) > 0 {
+				r.start(ctx, cfg, s, snap, Action{Kind: ActRun, Tree: name, PRs: a.Run})
+			}
 		case ActAdd:
 			r.add(cfg, s, snap, a)
 		case ActReap:
@@ -245,7 +247,9 @@ func (r *Reviewer) memoRelated(ask Related) Related {
 	}
 }
 
-func (r *Reviewer) create(cfg *supatree.Config, s Settings, snap Snapshot, a Action) {
+// create makes a.PRs' review tree and returns its name, or "" when it could
+// not.
+func (r *Reviewer) create(cfg *supatree.Config, s Settings, snap Snapshot, a Action) string {
 	refs := refsFor(snap, a.PRs)
 	known, _ := supatree.KnownTreeNames(cfg)
 	name := treeName(snap, a.PRs, sortedKeys(known))
@@ -265,7 +269,7 @@ func (r *Reviewer) create(cfg *supatree.Config, s Settings, snap Snapshot, a Act
 	if err != nil {
 		r.logf("reviewer: create a tree for %s: %v", strings.Join(a.PRs, ", "), err)
 		r.failed(s, a.PRs, "", fmt.Errorf("create review tree: %w", err))
-		return
+		return ""
 	}
 	r.logf("reviewer: created %s for %s", inst.Name, strings.Join(a.PRs, ", "))
 	// Now, before any agent has run in the tree and could have changed it.
@@ -277,6 +281,7 @@ func (r *Reviewer) create(cfg *supatree.Config, s Settings, snap Snapshot, a Act
 		}
 		return nil
 	})
+	return inst.Name
 }
 
 // claim marks a new tree as the reviewer's, and lets it post: posting is

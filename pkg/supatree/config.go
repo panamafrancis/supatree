@@ -108,6 +108,14 @@ type ReviewerSettings struct {
 	// Signature is appended to the body of every review the reviewer posts,
 	// so a reader can tell an automated review from a person's.
 	Signature string `yaml:"signature,omitempty"`
+	// IgnoreAuthors are GitHub logins whose pull requests are never
+	// reviewed, compared case-insensitively — a bot's is written as GitHub
+	// shows it, dependabot[bot].
+	IgnoreAuthors []string `yaml:"ignore_authors,omitempty"`
+	// Since skips pull requests last updated before it: a date (2006-01-02),
+	// a timestamp (RFC 3339), or an age such as 14d or 72h. For starting on a
+	// backlog of old requests without reviewing all of it.
+	Since string `yaml:"since,omitempty"`
 }
 
 // Approves reports whether the reviewer may post APPROVE.

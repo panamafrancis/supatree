@@ -27,7 +27,8 @@ type Snapshot struct {
 type ActionKind string
 
 const (
-	// ActCreate makes a review tree for PRs, all in Stack.
+	// ActCreate makes a review tree for PRs, all in Stack, then reviews Run
+	// in it.
 	ActCreate ActionKind = "create"
 	// ActAdd adds PRs to the existing Tree.
 	ActAdd ActionKind = "add"
@@ -39,10 +40,13 @@ const (
 
 // Action is one thing Plan decided to do.
 type Action struct {
-	Kind   ActionKind
-	Tree   string
-	Stack  string
-	PRs    []string
+	Kind  ActionKind
+	Tree  string
+	Stack string
+	PRs   []string
+	// Run is, for ActCreate, the pull requests to review once the tree is
+	// made: those of PRs that are waiting and due.
+	Run    []string
 	Reason string
 }
 
@@ -58,7 +62,7 @@ type Related func(prs []*PR, inReview map[string]string) [][]string
 // the actions; it performs none of them, so it is pure over its inputs.
 func Plan(snap Snapshot, st *State, s Settings, related Related) []Action {
 	now := snap.Now
-	observe(snap, st, s.Login)
+	observe(snap, st, s)
 
 	inTree := treeIndex(snap)
 	for name := range st.Trees {
@@ -72,48 +76,55 @@ func Plan(snap Snapshot, st *State, s Settings, related Related) []Action {
 		}
 	}
 
-	var actions []Action
-	actions = append(actions, planGroups(snap, st, s, related, inTree)...)
+	adds, creates := planGroups(snap, st, s, related, inTree)
+	actions := adds
 
-	// Runs, oldest-waiting tree first, within the concurrency cap.
+	// Runs and new trees share the concurrency cap, oldest-waiting first: a
+	// tree is made only when its review can start as soon as it exists, so a
+	// backlog does not become a tree per pull request before anything is
+	// reviewed. The executor starts each new tree's run right after creating
+	// it (Action.Run).
 	running := 0
 	for _, r := range snap.Running {
 		if r {
 			running++
 		}
 	}
-	type due struct {
-		tree  string
-		prs   []string
-		since time.Time
-	}
-	var dues []due
+	var dues []slotted
 	for _, name := range sortedKeys(snap.Trees) {
 		if snap.Running[name] {
 			continue
 		}
-		var d due
+		d := slotted{Action: Action{Kind: ActRun, Tree: name}}
 		for _, k := range sortedValues(snap.Trees[name].PRs) {
 			if snap.PRs[k] != nil && eligible(st.PRs[k], now) {
-				d.prs = append(d.prs, k)
+				d.PRs = append(d.PRs, k)
 				if ws := st.PRs[k].WaitingSince; d.since.IsZero() || ws.Before(d.since) {
 					d.since = ws
 				}
 			}
 		}
-		if len(d.prs) > 0 {
-			d.tree = name
+		if len(d.PRs) > 0 {
 			dues = append(dues, d)
 		}
 	}
+	dues = append(dues, creates...)
 	sort.SliceStable(dues, func(i, j int) bool { return dues[i].since.Before(dues[j].since) })
+	var runs, made []Action
 	for _, d := range dues {
 		if running >= s.MaxConcurrent {
 			break
 		}
 		running++
-		actions = append(actions, Action{Kind: ActRun, Tree: d.tree, PRs: d.prs})
+		if d.Kind == ActRun {
+			runs = append(runs, d.Action)
+		} else {
+			made = append(made, d.Action)
+		}
 	}
+	// Runs first: they start at once, where each create takes a while.
+	actions = append(actions, runs...)
+	actions = append(actions, made...)
 
 	// Reaping.
 	for _, name := range sortedKeys(snap.Trees) {
@@ -128,11 +139,11 @@ func Plan(snap Snapshot, st *State, s Settings, related Related) []Action {
 }
 
 // observe updates each pull request's waiting state from the snapshot.
-func observe(snap Snapshot, st *State, login string) {
+func observe(snap Snapshot, st *State, s Settings) {
 	for _, k := range sortedKeys(snap.PRs) {
 		p := snap.PRs[k]
 		ps := st.PRs[k]
-		if !waiting(p, ps, login) {
+		if !waiting(p, ps, s) {
 			if ps != nil {
 				ps.WaitingSince = time.Time{}
 				ps.Attempts = 0
@@ -153,13 +164,17 @@ func observe(snap Snapshot, st *State, login string) {
 	}
 }
 
-// waiting reports whether p is waiting on a review from login. GitHub removes
-// a reviewer from requested_reviewers when their review lands and puts them
-// back on a re-request, so "requested" is the whole signal — except that a
-// listing read before the last review landed still shows the request that
-// review answered. A listing no newer than that review is therefore not news.
-func waiting(p *PR, ps *PRState, login string) bool {
-	if !p.Open() || !p.Requested || strings.EqualFold(p.Author, login) {
+// waiting reports whether p is waiting on a review from s.Login. GitHub
+// removes a reviewer from requested_reviewers when their review lands and
+// puts them back on a re-request, so "requested" is the whole signal — except
+// that a listing read before the last review landed still shows the request
+// that review answered. A listing no newer than that review is therefore not
+// news. An ignored author's, or one older than s.Since, never waits.
+func waiting(p *PR, ps *PRState, s Settings) bool {
+	if !p.Open() || !p.Requested || strings.EqualFold(p.Author, s.Login) || s.ignores(p.Author) {
+		return false
+	}
+	if !s.Since.IsZero() && p.UpdatedAt.Before(s.Since) {
 		return false
 	}
 	return ps == nil || p.UpdatedAt.After(ps.ReviewedAt)
@@ -184,16 +199,23 @@ func backoff(attempts int) time.Duration {
 	return min(d, 2*time.Hour)
 }
 
+// slotted is a run, or a create with its run, waiting for a slot under the
+// concurrency cap; since is when its oldest pull request started waiting.
+type slotted struct {
+	Action
+	since time.Time
+}
+
 // planGroups finds the waiting pull requests no tree holds yet, groups them
 // with their siblings, and decides whether each group joins an existing tree
-// or gets one of its own.
-func planGroups(snap Snapshot, st *State, s Settings, related Related, inTree map[string]string) []Action {
+// or gets one of its own. Adds are returned to do now; creates, to do when a
+// slot is free.
+func planGroups(snap Snapshot, st *State, s Settings, related Related, inTree map[string]string) (adds []Action, creates []slotted) {
 	g, open := buildGroups(snap, st, related, inTree)
 	// A tree is made for, or joined by, a pull request that may run now: one
 	// whose last create failed waits out the same backoff a failed run does.
 	isWaiting := func(k string) bool { return eligible(st.PRs[k], snap.Now) }
 
-	var actions []Action
 	for _, comp := range g.components() {
 		var unassigned, waitingNew []string
 		trees := map[string]bool{}
@@ -220,14 +242,14 @@ func planGroups(snap Snapshot, st *State, s Settings, related Related, inTree ma
 			for t := range trees {
 				name = t
 			}
-			adds, rest := fitTree(snap.Trees[name], waitingNew, open)
-			if len(adds) > 0 {
-				actions = append(actions, Action{Kind: ActAdd, Tree: name, PRs: adds, Reason: "sibling of a change already in review"})
+			fit, rest := fitTree(snap.Trees[name], waitingNew, open)
+			if len(fit) > 0 {
+				adds = append(adds, Action{Kind: ActAdd, Tree: name, PRs: fit, Reason: "sibling of a change already in review"})
 			}
 			if len(rest) == 0 {
 				continue
 			}
-			unassigned = rest
+			unassigned, waitingNew = rest, rest
 		}
 		// A group of its own. Wait out the window from the newest request, so
 		// siblings opened a minute later are in the tree from the start.
@@ -240,9 +262,15 @@ func planGroups(snap Snapshot, st *State, s Settings, related Related, inTree ma
 		if snap.Now.Before(newest.Add(s.GroupWindow)) {
 			continue
 		}
-		actions = append(actions, Action{Kind: ActCreate, Stack: open[unassigned[0]].Stack, PRs: unassigned})
+		c := slotted{Action: Action{Kind: ActCreate, Stack: open[unassigned[0]].Stack, PRs: unassigned, Run: waitingNew}}
+		for _, k := range waitingNew {
+			if ws := st.PRs[k].WaitingSince; c.since.IsZero() || ws.Before(c.since) {
+				c.since = ws
+			}
+		}
+		creates = append(creates, c)
 	}
-	return actions
+	return adds, creates
 }
 
 // buildGroups groups the open pull requests: the deterministic evidence,
@@ -302,7 +330,7 @@ func applyRelated(g *groups, open map[string]*PR, related Related, inTree map[st
 	lone := map[string]bool{}
 	byAuthor := map[string][]*PR{}
 	for _, k := range sortedKeys(open) {
-		if open[k].Author == "" {
+		if open[k].Author == "" || isBot(open[k].Author) {
 			continue
 		}
 		if candidate(k) && sizes[g.find(k)] == 1 {

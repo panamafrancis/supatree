@@ -78,9 +78,14 @@ func TestWaiting(t *testing.T) {
 		// A listing read before the review landed still shows the request it answered.
 		{"stale listing after a review", pr("o/api", 1, func(p *PR) { p.UpdatedAt = t0.Add(-time.Second) }), reviewed, false},
 		{"re-requested after a review", pr("o/api", 1, func(p *PR) { p.UpdatedAt = t0.Add(time.Hour) }), reviewed, true},
+		{"ignored author", pr("o/api", 1, func(p *PR) { p.Author = "dependabot[bot]" }), nil, false},
+		{"older than since", pr("o/api", 1, func(p *PR) { p.UpdatedAt = t0.Add(-48 * time.Hour) }), nil, false},
 	}
+	s := settings()
+	s.IgnoreAuthors = []string{"Dependabot[bot]"}
+	s.Since = t0.Add(-24 * time.Hour)
 	for _, tc := range tests {
-		if got := waiting(tc.p, tc.ps, bot); got != tc.want {
+		if got := waiting(tc.p, tc.ps, s); got != tc.want {
 			t.Errorf("%s: waiting = %v, want %v", tc.name, got, tc.want)
 		}
 	}
@@ -481,5 +486,90 @@ func TestLLMInputMarksPRsInReview(t *testing.T) {
 	}
 	if strings.Count(in, `"in_review_as": "`+treeA+`"`) != 1 {
 		t.Errorf("input does not mark exactly the reviewed pull request:\n%s", in)
+	}
+}
+
+// A backlog is not a tree per pull request before anything is reviewed: new
+// trees take a review slot, as runs do, oldest request first, and each is
+// reviewed as soon as it exists.
+func TestPlanPacesCreatesToFreeSlots(t *testing.T) {
+	st := newState()
+	var prs []*PR
+	for i := 1; i <= 4; i++ {
+		prs = append(prs, pr("o/svc"+strconv.Itoa(i), i, func(p *PR) { p.Author = "author" + strconv.Itoa(i) }))
+	}
+	snap := snapOf(t0, prs...)
+	snap.Trees["busy"] = &Tree{Name: "busy", PRs: map[string]string{}}
+	snap.Running["busy"] = true
+	Plan(snap, st, settings(), nil)
+	// The fourth was asked first; the others later, in order.
+	for i, p := range prs {
+		st.PRs[p.Key].WaitingSince = t0.Add(time.Duration(i+1) * time.Minute)
+	}
+	st.PRs[prs[3].Key].WaitingSince = t0
+
+	snap.Now = t0.Add(time.Hour)
+	as := Plan(snap, st, settings(), nil)
+	if got := kinds(as); !slices.Equal(got, []string{"create::o/svc4#4"}) {
+		t.Fatalf("one slot free: %v, want only the oldest request's tree", got)
+	}
+	if !slices.Equal(as[0].Run, []string{"o/svc4#4"}) {
+		t.Errorf("Run = %v, want the new tree reviewed at once", as[0].Run)
+	}
+
+	// A run in an existing tree waiting longer goes ahead of a new tree.
+	delete(snap.Running, "busy")
+	delete(snap.Trees, "busy")
+	snap.Trees["old"] = &Tree{Name: "old", PRs: map[string]string{"api": apiPR}}
+	snap.PRs[apiPR] = pr("o/api", 1)
+	st.pr(apiPR).WaitingSince = t0.Add(-time.Hour)
+	got := kinds(Plan(snap, st, settings(), nil))
+	if !slices.Equal(got, []string{"run:old:o/api#1", "create::o/svc4#4"}) {
+		t.Errorf("two slots: %v, want the older run, then the oldest create", got)
+	}
+}
+
+// Dependabot opens the same branch in every repository it bumps; those are
+// separate changes, and the LLM is not asked to judge otherwise.
+func TestBotPullRequestsAreNeverGrouped(t *testing.T) {
+	const branch = "dependabot/docker/docker-updates-22e9647013"
+	dep := func(p *PR) { p.Author, p.HeadRef = "dependabot[bot]", branch }
+	api, web := pr("o/api", 1, dep), pr("o/web", 2, dep)
+	web.Body = "See " + api.URL
+	prs := map[string]*PR{api.Key: api, web.Key: web}
+	g := groupDeterministic(prs)
+	if g.find(api.Key) == g.find(web.Key) {
+		t.Fatal("two Dependabot pull requests grouped")
+	}
+	asked := false
+	applyRelated(g, prs, func([]*PR, map[string]string) [][]string { asked = true; return nil },
+		map[string]string{}, func(string) bool { return true })
+	if asked {
+		t.Error("the LLM pass was asked about a bot's pull requests")
+	}
+}
+
+func TestParseSince(t *testing.T) {
+	now := time.Date(2026, 11, 3, 12, 0, 0, 0, time.UTC)
+	tests := []struct {
+		in   string
+		want time.Time
+	}{
+		{"", time.Time{}},
+		{"2026-11-03T08:00:00Z", time.Date(2026, 11, 3, 8, 0, 0, 0, time.UTC)},
+		{"14d", now.AddDate(0, 0, -14)},
+		{"72h", now.Add(-72 * time.Hour)},
+		{"2026-11-01", time.Date(2026, 11, 1, 0, 0, 0, 0, time.Local)},
+	}
+	for _, tc := range tests {
+		got, err := parseSince(tc.in, now)
+		if err != nil || !got.Equal(tc.want) {
+			t.Errorf("parseSince(%q) = %v, %v; want %v", tc.in, got, err, tc.want)
+		}
+	}
+	for _, bad := range []string{"yesterday", "-3d", "-1h"} {
+		if _, err := parseSince(bad, now); err == nil {
+			t.Errorf("parseSince(%q): no error", bad)
+		}
 	}
 }

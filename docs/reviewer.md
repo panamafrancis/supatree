@@ -38,9 +38,9 @@ Every 30 seconds the watcher polls each watched repository's pull request list. 
   3. The same author pushing the same branch name, or the same `st/<slug>/` prefix, to several repositories.
   4. Optionally, an LLM pass over one author's otherwise-unrelated pull requests. See `llm_grouping`.
 
-  A group holds at most one pull request per repository, all from one stack. Where the evidence conflicts, the reviewer splits rather than merges.
+  A group holds at most one pull request per repository, all from one stack. Where the evidence conflicts, the reviewer splits rather than merges. A bot's pull requests (an author like `dependabot[bot]`) are never grouped: Dependabot pushes the same branch name, for the same kind of bump, to every repository, and each of those is a change of its own.
 - **Waits.** A new group waits `group_window` (5 minutes by default) after its newest request, so pull requests opened a minute apart land in the same tree. A pull request that turns out to belong to a change already in review — by any of the evidence above, the LLM pass included — joins that change's tree at once, if the tree has no pull request in its repository yet.
-- **Creates a review tree.** Every repository is checked out at its pull request's head. These trees belong to the reviewer, which never touches trees you made yourself.
+- **Creates a review tree**, once a review slot is free. Every repository is checked out at its pull request's head, and the review starts as soon as the tree exists. Runs in existing trees and new trees share the `max_concurrent` slots, oldest request first, so a backlog of requests is worked through a few at a time rather than becoming a tree each before anything is reviewed. These trees belong to the reviewer, which never touches trees you made yourself.
 - **Reviews.** It starts a headless agent with a fixed brief. The agent reads existing comments, builds, lints and tests every repository, checks the repositories against each other, and posts one review per waiting pull request:
   - **APPROVE** when nothing blocks;
   - **REQUEST_CHANGES** when something does;
@@ -106,6 +106,8 @@ reviewer:
   guidance_file: review-advice.md # optional: the same from a file (relative to ~/.config/supatree)
   approve: true                   # false: post COMMENT instead of APPROVE, leaving approval to a person
   signature: "_Automated review by supatree._"  # optional: appended to every review it posts
+  ignore_authors: ["dependabot[bot]", "renovate[bot]"]  # optional: never review these authors' pull requests
+  since: 2026-11-01               # optional: skip pull requests last updated before this (or an age: 14d, 72h)
 ```
 
 | Key | Default | Meaning |
@@ -116,7 +118,7 @@ reviewer:
 | `model` | `default_model` | The `models:` entry reviews run under. It needs `exec_args`, the headless invocation; the built-in `claude` entry has them. Codex is not supported for headless runs. |
 | `group_window` | `5m` | How long a new group waits for siblings. |
 | `llm_grouping` | `false` | Ask Claude about one author's pull requests in different repositories that nothing links, including whether one belongs to a change of theirs that is already in review. That call has no tools, no MCP servers and no session; the pull request text goes to it on stdin, and every grouping it proposes is still checked against the one-per-repository rule. |
-| `max_concurrent` | `2` | Concurrent review runs. Each one builds and tests whole repositories, so size this to the machine. |
+| `max_concurrent` | `2` | Concurrent review runs. Each one builds and tests whole repositories, so size this to the machine. A new tree is only made when a slot is free for its review. |
 | `max_attempts` | `3` | Failed runs per request before the reviewer gives up. A new push or re-request starts over. |
 | `timeout` | `45m` | Hard limit per run; the agent is killed after it. |
 | `tree_ttl` | `168h` | How long an idle tree is kept, so a re-review can resume the same session. |
@@ -124,6 +126,8 @@ reviewer:
 | `guidance_file` | none | The same, read from a file: absolute, or relative to `~/.config/supatree`. Read every round; an unreadable file stops the reviewer with an error rather than reviewing without it. |
 | `approve` | `true` | Whether the reviewer may approve. With `false`, a review with nothing blocking is posted as COMMENT, saying nothing blocks; request-changes and comments are unaffected. Enforced by `review_post` itself, whatever the agent asks for. |
 | `signature` | none | Markdown appended, after a rule, to the body of every review the reviewer posts, so readers can tell its reviews from a person's. Added by `review_post`, so the agent cannot leave it out. |
+| `ignore_authors` | none | GitHub logins whose pull requests are never reviewed, case-insensitive. Write a bot as GitHub shows it: `dependabot[bot]` — quoted, since YAML reads unquoted brackets as a list. |
+| `since` | none | Skip pull requests last updated before this: a date (`2026-11-01`, local midnight), an RFC 3339 timestamp, or an age back from now (`14d`, `72h`). For switching the reviewer on without working through an old backlog. A skipped pull request is taken up when it is next updated, a re-request included. |
 
 Other settings worth knowing:
 
@@ -169,7 +173,8 @@ There is nothing else to set up: the watcher that `supatree start` launches runs
 - **Reviews are posted in your name.** Without `approve: false` an approval it posts is *your* approval, and counts as one wherever branch protection asks for yours. Set `approve: false` and a `signature`, so your colleagues can tell its reviews from yours and approving stays your decision.
 - **It takes every request for your review**, `group_window` (5 minutes) after it arrives, including ones you meant to do yourself. It never posts on your own pull requests.
 - **One watcher does both.** The watcher `supatree start` launches runs the reviewer next to everything else it does for your sessions — notifications, agent launches, PM nudges. While the reviewer is enabled it does not exit when your last session closes: it keeps reviewing, and serves the next session you open. To have it reviewing before you have started supatree at all, start `supatree watch` at login (a launchd agent, or a cron entry: a second watcher exits quietly while one is running).
-- **Reviews run in the background**, not in tabs: follow them with `supatree reviewer log -f` and `supatree reviewer status`. They count towards your `max_running_agents`.
+- **Reviews run in the background**, not in tabs. A review runs as the tree's agent `reviewer`, headless; the tree's tab (`supatree open rv-…`) is its `main` agent, which the reviewer never uses. Follow one review with `supatree reviewer watch <tree>`, and all of them with `supatree reviewer log -f` and `supatree reviewer status`. Once a run has ended, `supatree open <tree> --agent=reviewer` resumes its session, to ask it about its review; while a run is going that is refused, and a run does not start while that tab is open. They count towards your `max_running_agents`.
+- **Requests from before you switched it on** are all taken up, a few at a time. Set `since` to skip the old ones, and `ignore_authors` for bots.
 - Your own review trees (`supatree review`) are never touched; the reviewer only refreshes, runs in and removes the `rv-…` trees it made.
 
 Try it first with `enabled: false` and `supatree reviewer plan`, which shows what it would take on.
@@ -293,12 +298,13 @@ supatree reviewer plan              # dry run: what it would do now, and how it 
 supatree reviewer status            # every watched pull request: state, tree, last verdict, failures
 supatree reviewer forget acme/api#42 # clear what it remembers about one pull request (failures, give-up)
 supatree reviewer log -f            # its lines from watch.log, followed as they are written
+supatree reviewer watch rv-api-42   # one tree's review as it runs: what the agent says, the tools it calls
 supatree ls                          # the reviewer's trees are listed under Reviews, named rv-<repo>-<n>
 supatree ps                          # running review agents
 ```
 
 - **The watcher's log** goes to stderr under `--headless`, otherwise to `~/.local/state/supatree/logs/watch.log`, whose reviewer lines `supatree reviewer log` picks out. It records every tree created, run started and finished, every verdict confirmed, every failure, and a summary whenever it changes.
-- **Run transcripts:** `~/.local/state/supatree/trees/<tree>/logs/reviewer-<time>.jsonl`, the agent's full stream.
+- **Run transcripts:** `~/.local/state/supatree/trees/<tree>/logs/reviewer-<time>.jsonl`, the agent's full stream. `supatree reviewer watch <tree>` renders the latest one, following it while the run lasts (`--raw` for the stream as it is).
 - **Notifications** go through `notify_command`:
   - `review_posted` is board tier: recorded, not pushed.
   - `review_failed` is desktop tier: pushed. It means the reviewer gave up on a pull request and a person should look.

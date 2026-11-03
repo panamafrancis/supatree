@@ -36,3 +36,7 @@ reviewer:
   # approve: false
   # Appended to every review, so readers can tell it from a person's.
   # signature: "_Automated review by supatree._"
+  # Never review these authors' pull requests.
+  # ignore_authors: ["dependabot[bot]", "renovate[bot]"]
+  # Skip pull requests last updated before this: a date, or an age (14d).
+  # since: 14d

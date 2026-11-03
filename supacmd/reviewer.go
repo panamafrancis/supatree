@@ -3,6 +3,7 @@ package supacmd
 import (
 	"fmt"
 	"os"
+	"slices"
 	"sort"
 	"strings"
 	"text/tabwriter"
@@ -190,7 +191,7 @@ var reviewerPlanCmd = &cobra.Command{
 				if g.ReadyAt.After(now) {
 					parts = append(parts, fmt.Sprintf("tree would be made at %s (in %s)", g.ReadyAt.Local().Format(time.TimeOnly), g.ReadyAt.Sub(now).Round(time.Second)))
 				} else {
-					parts = append(parts, "tree is due")
+					parts = append(parts, dueText(p.Actions, g.PRs))
 				}
 			}
 			fmt.Printf("  %s\n      %s\n", strings.Join(g.PRs, " + "), strings.Join(parts, "; "))
@@ -208,7 +209,10 @@ func describeAction(a reviewer.Action) string {
 	prs := strings.Join(a.PRs, ", ")
 	switch a.Kind {
 	case reviewer.ActCreate:
-		return fmt.Sprintf("create a review tree in stack %s for %s", a.Stack, prs)
+		if len(a.Run) == 0 {
+			return fmt.Sprintf("create a review tree in stack %s for %s", a.Stack, prs)
+		}
+		return fmt.Sprintf("create a review tree in stack %s for %s, and review %s in it", a.Stack, prs, strings.Join(a.Run, ", "))
 	case reviewer.ActAdd:
 		return fmt.Sprintf("add %s to %s (%s)", prs, a.Tree, a.Reason)
 	case reviewer.ActRun:
@@ -217,6 +221,17 @@ func describeAction(a reviewer.Action) string {
 		return fmt.Sprintf("remove %s: %s", a.Tree, a.Reason)
 	}
 	return string(a.Kind)
+}
+
+// dueText says what becomes of a group whose window has passed: a tree now,
+// or one once a review slot (max_concurrent) frees up.
+func dueText(actions []reviewer.Action, prs []string) string {
+	for _, a := range actions {
+		if a.Kind == reviewer.ActCreate && len(prs) > 0 && slices.Contains(a.PRs, prs[0]) {
+			return "tree is due"
+		}
+	}
+	return "tree is due, waiting for a free review slot (max_concurrent)"
 }
 
 func orDash(s string) string {

@@ -7,6 +7,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"sort"
 	"strings"
 	"syscall"
 	"time"
@@ -65,6 +66,9 @@ func RunHeadless(ctx context.Context, inst *Instance, c *Config, opts HeadlessOp
 	}
 	if err := ValidateAgentName(name); err != nil {
 		return HeadlessResult{}, err
+	}
+	if tabRunning(inst.Name, name) {
+		return HeadlessResult{}, fmt.Errorf("agent %s in %s is open in a tab; it runs headless once that is closed", name, inst.Name)
 	}
 	if !HasMail(inst.Root, name) {
 		return HeadlessResult{}, fmt.Errorf("agent %s in %s has no brief waiting", name, inst.Name)
@@ -226,4 +230,39 @@ func HeadlessRunning() int {
 		}
 	}
 	return n
+}
+
+// HeadlessRun is the headless run of agent in tree that is alive now, if
+// there is one.
+func HeadlessRun(tree, agent string) (ProcRecord, bool) {
+	for _, r := range ListProcs() {
+		if r.Headless && r.Tree == tree && r.Agent == agent && r.Member == "" {
+			return r, true
+		}
+	}
+	return ProcRecord{}, false
+}
+
+// tabRunning reports whether agent in tree is running in a terminal: two
+// processes on one session would each write the other's conversation.
+func tabRunning(tree, agent string) bool {
+	for _, r := range ListProcs() {
+		if !r.Headless && !r.IsPM() && r.Tree == tree && r.Agent == agent && r.Member == "" {
+			return true
+		}
+	}
+	return false
+}
+
+// LatestHeadlessLog is the newest run log of agent in the tree at root.
+func LatestHeadlessLog(root, agent string) (string, error) {
+	matches, err := filepath.Glob(filepath.Join(HeadlessLogDir(root), agent+"-*.jsonl"))
+	if err != nil {
+		return "", err
+	}
+	if len(matches) == 0 {
+		return "", fmt.Errorf("agent %s has no headless run logs yet", agent)
+	}
+	sort.Strings(matches) // the names carry a UTC timestamp
+	return matches[len(matches)-1], nil
 }

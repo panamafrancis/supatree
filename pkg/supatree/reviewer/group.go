@@ -107,10 +107,18 @@ func (g *groups) components() [][]string {
 // groupDeterministic unions prs on the evidence that needs no judgement: the
 // change marker, a description linking another pull request, and the same
 // author pushing the same branch name (or the same st/<slug>/ prefix) to
-// several repositories. Only an author's own pull requests are ever joined.
+// several repositories. Only an author's own pull requests are ever joined,
+// and a bot's are never joined at all: Dependabot and its kind open the same
+// branch, about the same bump, in every repository it watches, and each of
+// those is a change of its own.
 func groupDeterministic(prs map[string]*PR) *groups {
 	g := newGroups(prs)
-	keys := sortedKeys(prs)
+	var keys []string
+	for _, k := range sortedKeys(prs) {
+		if !isBot(prs[k].Author) {
+			keys = append(keys, k)
+		}
+	}
 
 	// 1. The change marker.
 	byMarker := map[string][]string{}
@@ -125,7 +133,7 @@ func groupDeterministic(prs map[string]*PR) *groups {
 	// 2. A description naming another watched pull request by the same author.
 	for _, k := range keys {
 		for _, ref := range bodyRefs(prs[k].Body) {
-			if other, ok := prs[ref]; ok && ref != k && sameAuthor(prs[k], other) {
+			if other, ok := prs[ref]; ok && ref != k && sameAuthor(prs[k], other) && !isBot(other.Author) {
 				g.union(k, ref, ReasonLink)
 			}
 		}
@@ -187,6 +195,12 @@ func bodyRefs(body string) []string {
 		}
 	}
 	return out
+}
+
+// isBot reports whether login is a GitHub App's account: GitHub names them
+// <app>[bot].
+func isBot(login string) bool {
+	return strings.HasSuffix(strings.ToLower(login), "[bot]")
 }
 
 func sameAuthor(a, b *PR) bool {

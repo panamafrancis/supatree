@@ -84,57 +84,76 @@ func reviewerLines(path string) ([]string, error) {
 }
 
 // followReviewerLog prints reviewer lines as the watcher appends them,
-// starting at the log's current end. The watcher rotates the log by renaming
-// it, so a file that shrank or was replaced is read again from the start.
+// starting at the log's current end.
 func followReviewerLog(ctx context.Context, path string, out io.Writer) error {
+	return tailLines(ctx, path, false, func(l string) {
+		if isReviewerLine(l) {
+			_, _ = fmt.Fprintln(out, l)
+		}
+	}, nil)
+}
+
+// tailLines calls each with every complete line appended to path, from its
+// start or from its current end, until ctx is done or done reports true —
+// checked once a second, after what was written by then has been read. The
+// watcher rotates its log by renaming it, so a file that shrank or was
+// replaced is read again from the start.
+func tailLines(ctx context.Context, path string, fromStart bool, each func(string), done func() bool) error {
 	var offset int64
 	var ident os.FileInfo
-	if st, err := os.Stat(path); err == nil {
+	if st, err := os.Stat(path); err == nil && !fromStart {
 		offset, ident = st.Size(), st
+	} else if err == nil {
+		ident = st
 	}
 	var partial string
 	tick := time.NewTicker(time.Second)
 	defer tick.Stop()
-	for {
-		select {
-		case <-ctx.Done():
-			return nil
-		case <-tick.C:
-		}
-		st, err := os.Stat(path)
-		if err != nil {
-			continue // between a rotation's rename and the new file
-		}
-		if ident == nil || !os.SameFile(ident, st) || st.Size() < offset {
-			offset, partial = 0, ""
-		}
-		ident = st
-		if st.Size() == offset {
-			continue
-		}
-		f, err := os.Open(path)
-		if err != nil {
-			continue
-		}
-		_, err = f.Seek(offset, io.SeekStart)
-		var data []byte
-		if err == nil {
-			data, err = io.ReadAll(f)
-		}
-		_ = f.Close()
-		if err != nil {
-			continue
-		}
-		offset += int64(len(data))
-		chunk := partial + string(data)
-		lines := strings.Split(chunk, "\n")
-		partial = lines[len(lines)-1] // an unfinished line waits for its end
-		for _, l := range lines[:len(lines)-1] {
-			if isReviewerLine(l) {
-				_, _ = fmt.Fprintln(out, l)
+	for first := true; ; first = false {
+		finished := done != nil && done()
+		if !first {
+			select {
+			case <-ctx.Done():
+				return nil
+			case <-tick.C:
 			}
 		}
+		if st, err := os.Stat(path); err == nil { // else between a rotation's rename and the new file
+			if ident == nil || !os.SameFile(ident, st) || st.Size() < offset {
+				offset, partial = 0, ""
+			}
+			ident = st
+			if st.Size() > offset {
+				data, err := readFrom(path, offset)
+				if err == nil {
+					offset += int64(len(data))
+					lines := strings.Split(partial+string(data), "\n")
+					partial = lines[len(lines)-1] // an unfinished line waits for its end
+					for _, l := range lines[:len(lines)-1] {
+						each(l)
+					}
+				}
+			}
+		}
+		if finished {
+			if partial != "" {
+				each(partial)
+			}
+			return nil
+		}
 	}
+}
+
+func readFrom(path string, offset int64) ([]byte, error) {
+	f, err := os.Open(path)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = f.Close() }()
+	if _, err := f.Seek(offset, io.SeekStart); err != nil {
+		return nil, err
+	}
+	return io.ReadAll(f)
 }
 
 func init() {

@@ -16,6 +16,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"time"
 
@@ -56,6 +57,21 @@ type Settings struct {
 	Guidance string
 	// Approve is whether the reviewer may post APPROVE (reviewer.approve).
 	Approve bool
+	// IgnoreAuthors are logins whose pull requests are never reviewed.
+	IgnoreAuthors []string
+	// Since: pull requests last updated before it are not reviewed. Zero is
+	// no limit.
+	Since time.Time
+}
+
+// ignores reports whether author's pull requests are left alone.
+func (s Settings) ignores(author string) bool {
+	for _, a := range s.IgnoreAuthors {
+		if strings.EqualFold(a, author) {
+			return true
+		}
+	}
+	return false
 }
 
 // ErrDisabled is a config with the reviewer off or absent.
@@ -87,8 +103,12 @@ func ResolveConfigured(c *supatree.Config) (Settings, error) {
 		MaxConcurrent: r.MaxConcurrent,
 		MaxAttempts:   r.MaxAttempts,
 		Approve:       r.Approves(),
+		IgnoreAuthors: r.IgnoreAuthors,
 	}
 	var err error
+	if s.Since, err = parseSince(r.Since, time.Now()); err != nil {
+		return Settings{}, err
+	}
 	if s.GroupWindow, err = duration("group_window", r.GroupWindow, DefaultGroupWindow); err != nil {
 		return Settings{}, err
 	}
@@ -144,6 +164,29 @@ func operatorGuidance(inline, file string) (string, error) {
 		}
 	}
 	return capGuidance(strings.Join(out, "\n\n")), nil
+}
+
+// parseSince reads reviewer.since: a date, a timestamp, or an age back from
+// now — Go's durations, plus whole days as 14d.
+func parseSince(v string, now time.Time) (time.Time, error) {
+	if v == "" {
+		return time.Time{}, nil
+	}
+	if t, err := time.ParseInLocation(time.DateOnly, v, time.Local); err == nil {
+		return t, nil
+	}
+	if t, err := time.Parse(time.RFC3339, v); err == nil {
+		return t, nil
+	}
+	if days, ok := strings.CutSuffix(v, "d"); ok {
+		if n, err := strconv.Atoi(days); err == nil && n >= 0 {
+			return now.AddDate(0, 0, -n), nil
+		}
+	}
+	if d, err := time.ParseDuration(v); err == nil && d >= 0 {
+		return now.Add(-d), nil
+	}
+	return time.Time{}, fmt.Errorf("reviewer.since: %q is not a date (2006-01-02), a timestamp, or an age such as 14d or 72h", v)
 }
 
 func duration(name, v string, def time.Duration) (time.Duration, error) {
