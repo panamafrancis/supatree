@@ -3,6 +3,9 @@ package supacmd
 import (
 	"strings"
 	"testing"
+	"time"
+
+	"github.com/panamafrancis/supatree/pkg/supatree/reviewer"
 )
 
 func TestRenderStreamLine(t *testing.T) {
@@ -30,5 +33,24 @@ nono: sandbox ready
 `
 	if b.String() != want {
 		t.Errorf("rendered:\n%s\nwant:\n%s", b.String(), want)
+	}
+}
+
+func TestPendingReview(t *testing.T) {
+	snap := reviewer.Snapshot{Running: map[string]bool{"rv-busy": true}}
+	tests := []struct {
+		name string
+		ps   reviewer.PRState
+		want bool
+	}{
+		{"waiting", reviewer.PRState{WaitingSince: time.Now()}, true},
+		{"being reviewed", reviewer.PRState{Tree: "rv-busy"}, true},
+		{"answered, tree idle", reviewer.PRState{Tree: "rv-idle", Verdict: "COMMENTED"}, false},
+		{"never requested since watched", reviewer.PRState{}, false},
+	}
+	for _, tc := range tests {
+		if got := pendingReview(&tc.ps, snap); got != tc.want {
+			t.Errorf("%s: pending = %v, want %v", tc.name, got, tc.want)
+		}
 	}
 }

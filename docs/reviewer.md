@@ -295,7 +295,8 @@ The environment only seeds `config.yml` on first start. After that, the file on 
 
 ```sh
 supatree reviewer plan              # dry run: what it would do now, and how it groups the open pull requests
-supatree reviewer status            # every watched pull request: state, tree, last verdict, failures
+supatree reviewer status            # pull requests still pending: waiting, failing, or being reviewed
+supatree reviewer status --all      # every watched pull request, answered and merged ones too
 supatree reviewer forget acme/api#42 # clear what it remembers about one pull request (failures, give-up)
 supatree reviewer log -f            # its lines from watch.log, followed as they are written
 supatree reviewer watch rv-api-42   # one tree's review as it runs: what the agent says, the tools it calls

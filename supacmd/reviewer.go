@@ -27,10 +27,17 @@ var reviewerCmd = &cobra.Command{
 		"correct what it remembers.",
 }
 
+var reviewerStatusAll bool
+
 var reviewerStatusCmd = &cobra.Command{
 	Use:   "status",
 	Short: "Show the pull requests the reviewer sees and what it did with them",
-	Args:  cobra.NoArgs,
+	Long: "status lists the pull requests still pending: waiting on a review (failed\n" +
+		"attempts and give-ups included) or being reviewed right now. --all lists\n" +
+		"every pull request the reviewer watches — also those it has answered, those\n" +
+		"ignore_authors or since leave out, and merged or closed ones, which it\n" +
+		"watches for another week.",
+	Args: cobra.NoArgs,
 	RunE: func(cmd *cobra.Command, args []string) error {
 		cache := github.NewCache(supatree.PRCachePath())
 		_ = cache.Load()
@@ -50,11 +57,16 @@ var reviewerStatusCmd = &cobra.Command{
 			keys = append(keys, k)
 		}
 		sort.Strings(keys)
+		hidden := 0
 		for _, k := range keys {
 			p := snap.PRs[k]
 			ps := st.PRs[k]
 			if ps == nil {
 				ps = &reviewer.PRState{}
+			}
+			if !reviewerStatusAll && !pendingReview(ps, snap) {
+				hidden++
+				continue
 			}
 			note := ps.Grouping
 			switch {
@@ -69,9 +81,18 @@ var reviewerStatusCmd = &cobra.Command{
 			if verdict == "" {
 				verdict = "-"
 			}
+			if ps.Tree != "" && snap.Running[ps.Tree] {
+				note = "being reviewed"
+			}
 			_, _ = fmt.Fprintf(tw, "%s\t%s\t%v\t%s\t%s\t%s\n", k, p.Status, p.Requested, orDash(ps.Tree), verdict, note)
 		}
-		return tw.Flush()
+		if err := tw.Flush(); err != nil {
+			return err
+		}
+		if hidden > 0 {
+			fmt.Printf("\n%s not shown: answered, left out by ignore_authors or since, or merged or closed (--all lists them)\n", plural(hidden, "pull request"))
+		}
+		return nil
 	},
 }
 
@@ -205,6 +226,19 @@ var reviewerPlanCmd = &cobra.Command{
 	},
 }
 
+// pendingReview reports whether a pull request is still the reviewer's
+// business: waiting on a review, or being reviewed now.
+func pendingReview(ps *reviewer.PRState, snap reviewer.Snapshot) bool {
+	return !ps.WaitingSince.IsZero() || (ps.Tree != "" && snap.Running[ps.Tree])
+}
+
+func plural(n int, noun string) string {
+	if n == 1 {
+		return "1 " + noun
+	}
+	return fmt.Sprintf("%d %ss", n, noun)
+}
+
 func describeAction(a reviewer.Action) string {
 	prs := strings.Join(a.PRs, ", ")
 	switch a.Kind {
@@ -242,6 +276,7 @@ func orDash(s string) string {
 }
 
 func init() {
+	reviewerStatusCmd.Flags().BoolVar(&reviewerStatusAll, "all", false, "list every watched pull request, not only those still pending")
 	reviewerPlanCmd.Flags().BoolVar(&planNoFetch, "no-fetch", false, "use the PR cache as it is, without refreshing it")
 	reviewerPlanCmd.Flags().BoolVar(&planNoLLM, "no-llm", false, "skip the LLM grouping pass even when llm_grouping is on")
 	reviewerCmd.AddCommand(reviewerStatusCmd, reviewerForgetCmd, reviewerPlanCmd)
